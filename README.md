@@ -155,7 +155,6 @@ Quantitative developers and portfolio managers can utilize the platform to:
 * **Options Chain Ingestion**: Ingesting real-time option chain Greeks to execute synthetic option structures on breakouts.
 
 ## Contributors
-* **Jegadeesh D** — Lead Quantitative Researcher and Software Engineer.
-
+* **Jegadeesh D** —  Quantitative Researcher and Software Engineer.
 ## License
 MIT License
