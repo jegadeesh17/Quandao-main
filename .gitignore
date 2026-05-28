@@ -1,0 +1,30 @@
+__pycache__
+
+.env
+
+/others
+# Private/Experimental Research
+private_research/
+
+# Proprietary Strategy Files (trade secrets — DO NOT COMMIT)
+quandao_project/strategies/alpha_signals.py
+quandao_project/strategies/base_strategy.py
+quandao_project/strategies/intraday_orb_gold.py
+quandao_project/strategies/moonphase_orb.py
+quandao_project/strategies/nifty_orb.py
+quandao_project/strategies/tt_entries.py
+quandao_project/strategies/weekly_orb_forex.py
+
+# Main orchestrator (contains live bot logic tied to strategies)
+quandao_project/main.py
+
+# Trade journals and state files
+*.json
+
+# Scratch, Temp, and Log files
+debug.py
+*.txt
+*.log
+.agents/
+*.zip
+
