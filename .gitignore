@@ -28,3 +28,7 @@ debug.py
 .agents/
 *.zip
 
+# Internal Guide Files (proprietary — DO NOT COMMIT)
+guide.ipynb
+quandao_project/guide.md
+
