@@ -20,7 +20,7 @@ SIMULATED CAPITAL:
     Forex/MT5:  $1,000    (SIMULATED_CAPITAL_USD)
 
 PAPER TRADE LOG FORMAT:
-    All trades are appended to quandao_public/results/paper_trades.json
+    All trades are appended to quandao_private/results/live/paper_trades.json
     as a JSON array. Each entry is one complete trade (entry OR exit OR combined).
 
 USAGE:

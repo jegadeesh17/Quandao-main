@@ -15,14 +15,14 @@ import textwrap
 from datetime import datetime
 from pathlib import Path
 
-# All output files land in backend/results/output/
+# All output files land in quandao_private/results/backtest/
 _OUTPUT_DIR = Path(__file__).resolve().parent / "output"
 _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def save_json(data: dict, filename: str) -> Path:
     """
-    Save a strategy result dict to ``backend/results/output/<filename>.json``.
+    Save a strategy result dict to ``quandao_private/results/backtest/<filename>.json``.
 
     Parameters
     ----------

@@ -20,7 +20,7 @@ KEY DESIGN:
     - ALWAYS DRY RUN — no real orders placed
     - Full analytics logged: strike, delta, gamma, theta, vega, IV, Greeks, cost
     - Positions tracked in memory (list of dicts) for risk monitoring
-    - Separate log file: quandao_public/results/options_trades.json
+    - Separate log file: quandao_private/results/live/options_trades.json
 
 USAGE:
     from quandao_public.execution.options_executor import run_options_paper_trade

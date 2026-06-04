@@ -203,7 +203,7 @@ def run_backtest():
     """
     Backtest endpoint.
     Strategies are run via backend/strategies/*.py and their results
-    are persisted to backend/results/output/.  Use GET /api/results
+    are persisted to quandao_private/results/backtest/.  Use GET /api/results
     (served by the frontend Node server) to view saved results in the UI.
     """
     return jsonify({

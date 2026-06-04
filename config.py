@@ -70,7 +70,7 @@ GST_RATE               = 0.18      # 18% GST on (brokerage + exchange charge + S
 
 # ── File Paths ──────────────────────────────────────────────────────────────
 # Relative to the project root (Quandao-main/).
-PAPER_TRADE_LOG_PATH   = "quandao_public/results/paper_trades.json"
-WALK_FORWARD_RESULTS   = "quandao_public/results/walk_forward_results.json"
-OPTIONS_TRADE_LOG_PATH = "quandao_public/results/options_trades.json"
+PAPER_TRADE_LOG_PATH   = "quandao_private/results/live/paper_trades.json"
+WALK_FORWARD_RESULTS   = "quandao_private/results/backtest/walk_forward_results.json"
+OPTIONS_TRADE_LOG_PATH = "quandao_private/results/live/options_trades.json"
 

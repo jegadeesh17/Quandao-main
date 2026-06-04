@@ -4,7 +4,7 @@ Chart & PDF generator for strategy results.
 
 Usage:
     from quandao_public.results.visualize import generate_report
-    generate_report("backend/results/output/moon_phase_2025.json")
+    generate_report("quandao_private/results/backtest/moon_phase_2025.json")
 """
 
 import json
