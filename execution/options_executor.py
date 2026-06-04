@@ -1,5 +1,5 @@
 """
-quandao_project/execution/options_executor.py
+quandao_public/execution/options_executor.py
 ===============================================
 End-to-end options execution pipeline: signal → strike → Greeks → dry-run order → log.
 
@@ -20,10 +20,10 @@ KEY DESIGN:
     - ALWAYS DRY RUN — no real orders placed
     - Full analytics logged: strike, delta, gamma, theta, vega, IV, Greeks, cost
     - Positions tracked in memory (list of dicts) for risk monitoring
-    - Separate log file: quandao_project/results/options_trades.json
+    - Separate log file: quandao_public/results/options_trades.json
 
 USAGE:
-    from quandao_project.execution.options_executor import run_options_paper_trade
+    from quandao_public.execution.options_executor import run_options_paper_trade
 
     trades = run_options_paper_trade(
         signals=[{'symbol': 'NSE:NIFTY50-INDEX', 'signal': 'LONG', 'score': 0.72}],
@@ -40,7 +40,7 @@ from typing import List, Dict, Any, Optional
 import numpy as np
 import pandas as pd
 
-from quandao_project.config import (
+from quandao_public.config import (
     DRY_RUN,
     SIMULATED_CAPITAL_INR,
     RISK_FREE_RATE,
@@ -49,18 +49,18 @@ from quandao_project.config import (
     NIFTY_LOT_SIZE,
     THETA_BURN_THRESHOLD,
 )
-from quandao_project.strategies.options_pricing import (
+from quandao_public.strategies.options_pricing import (
     black_scholes,
     implied_volatility,
     select_strike_by_delta,
     theta_burn_exit,
 )
-from quandao_project.strategies.position_sizing import delta_adjusted_size
-from quandao_project.risk.risk_manager import (
+from quandao_public.strategies.position_sizing import delta_adjusted_size
+from quandao_public.risk.risk_manager import (
     portfolio_risk_summary,
     single_trade_risk_check,
 )
-from quandao_project.execution.order_executor import log_trade
+from quandao_public.execution.order_executor import log_trade
 
 
 # ── Log Path Setup ────────────────────────────────────────────────────────────
@@ -367,7 +367,7 @@ def run_options_paper_trade(signals: List[Dict],
         _print_options_order_summary(order_log)
 
     # ── 2. Monitor existing positions for exit triggers ─────────────────────
-    from quandao_project.risk.risk_manager import check_theta_burn
+    from quandao_public.risk.risk_manager import check_theta_burn
     theta_exit_candidates = check_theta_burn(open_positions)
 
     for pos in theta_exit_candidates:
@@ -440,3 +440,4 @@ def _print_options_order_summary(order: dict) -> None:
         f"Θ:{order['theta']:.2f}/day | ν:{order['vega']:.2f}\n"
         f"{'─'*60}"
     )
+

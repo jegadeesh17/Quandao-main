@@ -1,10 +1,10 @@
 """
-quandao_project/data/database.py
+quandao_public/data/database.py
 ==================================
 Unified database access layer for Quandao.
 
 WHY THIS MODULE EXISTS:
-    The research dashboard imports from quandao_project.data.database.
+    The research dashboard imports from quandao_public.data.database.
     This module provides a clean, single-function interface over the existing
     multi-resolution load.py logic — one function to rule them all.
 
@@ -16,7 +16,7 @@ DESIGN:
                             Returns empty DataFrame gracefully if table missing.
 
 USAGE:
-    from quandao_project.data.database import load_ohlcv, get_connection
+    from quandao_public.data.database import load_ohlcv, get_connection
 
     df = load_ohlcv("NSE:NIFTY50-INDEX", resolution="D",
                     from_date="2023-01-01", to_date="2024-01-01")
@@ -33,7 +33,7 @@ from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
 # ── Project Root & .env Setup ───────────────────────────────────────────────
-# Walk up from this file: database.py → data/ → quandao_project/ → Quandao-main/
+# Walk up from this file: database.py → data/ → quandao_public/ → Quandao-main/
 _PROJECT_ROOT = Path(__file__).resolve().parents[2]
 load_dotenv(_PROJECT_ROOT / ".env")
 
@@ -87,7 +87,7 @@ def load_ohlcv(symbol: str,
     """
     Unified OHLCV data loader — single function for all resolutions.
 
-    Delegates to the resolution-specific functions in quandao_project/data/load.py.
+    Delegates to the resolution-specific functions in quandao_public/data/load.py.
     The dashboard and all strategy modules call THIS function — not load.py directly.
 
     Supported Resolutions:
@@ -116,7 +116,7 @@ def load_ohlcv(symbol: str,
 
     try:
         # Import here to avoid circular imports at module load time
-        from quandao_project.data.load import load_ohlcv as _load_ohlcv
+        from quandao_public.data.load import load_ohlcv as _load_ohlcv
         df = _load_ohlcv(symbol, resolution, from_date, to_date)
         return df if df is not None else pd.DataFrame()
 
@@ -229,3 +229,4 @@ def get_latest_timestamp(symbol: str, resolution: str):
     except Exception as e:
         print(f"[database.get_latest_timestamp] Error: {e}")
         return None
+

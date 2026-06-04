@@ -3,7 +3,7 @@ backend/results/visualize.py
 Chart & PDF generator for strategy results.
 
 Usage:
-    from quandao_project.results.visualize import generate_report
+    from quandao_public.results.visualize import generate_report
     generate_report("backend/results/output/moon_phase_2025.json")
 """
 
@@ -313,3 +313,4 @@ def generate_report(json_path: str, prefix: str | None = None) -> str:
     doc.build(story)
     print(f"[results] PDF report saved → {pdf_path}")
     return pdf_path
+

@@ -3,7 +3,7 @@ import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-# Load .env from the project root (two levels up from quandao_project/data/)
+# Load .env from the project root (two levels up from quandao_public/data/)
 _this_dir     = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(os.path.dirname(_this_dir))
 load_dotenv(os.path.join(_project_root, ".env"))
@@ -317,11 +317,12 @@ def load_ohlcv_forex_15min(
 
 
 # ── Usage Examples ─────────────────────────────────────────────────────────
-# from quandao_project.data.load import load_ohlcv, load_ohlcv_forex_15min
+# from quandao_public.data.load import load_ohlcv, load_ohlcv_forex_15min
 #
 # # Indian equities (daily)
 # df = load_ohlcv("NSE:NIFTY50-INDEX", "D", "2020-01-01 00:00:00+05:30", "2025-01-01 00:00:00+05:30")
 #
 # # Forex 1-min raw
 # df = load_ohlcv_forex_15min("EURUSD", "2020-01-01 00:00:00+00:00", "2025-01-01 00:00:00+00:00")
+
 

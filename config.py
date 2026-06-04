@@ -1,10 +1,10 @@
 """
-quandao_project/config.py
+quandao_public/config.py
 =========================
 Platform-wide configuration constants for Quandao.
 
 HOW TO USE:
-    from quandao_project.config import SIMULATED_CAPITAL_INR, RISK_FREE_RATE
+    from quandao_public.config import SIMULATED_CAPITAL_INR, RISK_FREE_RATE
 
 DESIGN PRINCIPLE:
     Every number that a strategy or execution module needs (capital, rates, limits)
@@ -70,6 +70,7 @@ GST_RATE               = 0.18      # 18% GST on (brokerage + exchange charge + S
 
 # ── File Paths ──────────────────────────────────────────────────────────────
 # Relative to the project root (Quandao-main/).
-PAPER_TRADE_LOG_PATH   = "quandao_project/results/paper_trades.json"
-WALK_FORWARD_RESULTS   = "quandao_project/results/walk_forward_results.json"
-OPTIONS_TRADE_LOG_PATH = "quandao_project/results/options_trades.json"
+PAPER_TRADE_LOG_PATH   = "quandao_public/results/paper_trades.json"
+WALK_FORWARD_RESULTS   = "quandao_public/results/walk_forward_results.json"
+OPTIONS_TRADE_LOG_PATH = "quandao_public/results/options_trades.json"
+

@@ -1,5 +1,5 @@
 """
-quandao_project/data/factor_engine.py
+quandao_public/data/factor_engine.py
 =======================================
 Pure-function factor computation engine for the Quandao multi-factor model.
 
@@ -27,7 +27,7 @@ INTERVIEW ANCHORS:
     "What is VPT?" → Direction-weighted volume accumulation: rising on high vol, falling on low vol
 
 USAGE:
-    from quandao_project.data.factor_engine import compute_all_price_factors
+    from quandao_public.data.factor_engine import compute_all_price_factors
     df_with_factors = compute_all_price_factors(df)
 """
 
@@ -406,3 +406,4 @@ def compute_all_price_factors(df: pd.DataFrame) -> pd.DataFrame:
     df = factor_volume_surge(df)
 
     return df
+

@@ -1,5 +1,5 @@
 """
-quandao_project/strategies/cpcv_validation.py
+quandao_public/strategies/cpcv_validation.py
 ===============================================
 Combinatorial Purged Cross-Validation (CPCV) and Deflated Sharpe Ratio (DSR).
 
@@ -39,7 +39,7 @@ ACADEMIC REFERENCES:
       Overfitting", JCAM
 
 USAGE:
-    from quandao_project.strategies.cpcv_validation import (
+    from quandao_public.strategies.cpcv_validation import (
         run_cpcv_backtest, compute_dsr, compute_prob_dsr
     )
 
@@ -369,3 +369,4 @@ def interpret_pbo(pbo: float) -> str:
         return "⚠️  MODERATE — IS significantly outperforms OOS. Tighten parameters."
     else:
         return "❌ HIGH OVERFITTING — Strategy likely curve-fitted. Reject or redesign."
+

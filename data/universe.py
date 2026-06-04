@@ -1,5 +1,5 @@
 """
-quandao_project/data/universe.py
+quandao_public/data/universe.py
 ================================
 Defines the tradable universes for the Quandao platform.
 """
@@ -108,3 +108,4 @@ NIFTY_SECTOR_MAP = {
 }
 
 NIFTY_100_STOCKS = list(NIFTY_SECTOR_MAP.keys())
+

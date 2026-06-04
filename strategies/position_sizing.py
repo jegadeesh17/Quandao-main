@@ -1,5 +1,5 @@
 """
-quandao_project/strategies/position_sizing.py
+quandao_public/strategies/position_sizing.py
 ===============================================
 Position sizing engine — determines HOW MUCH to trade, not just WHEN.
 
@@ -13,7 +13,7 @@ DESIGN:
     Pure functions only — no state, no side effects, easy to audit.
 
 USAGE:
-    from quandao_project.strategies.position_sizing import fixed_fractional, kelly_fraction
+    from quandao_public.strategies.position_sizing import fixed_fractional, kelly_fraction
 
     # How many NIFTY futures contracts should we buy?
     n_lots = fixed_fractional(
@@ -26,7 +26,7 @@ USAGE:
 """
 
 import numpy as np
-from quandao_project.config import (
+from quandao_public.config import (
     SIMULATED_CAPITAL_INR,
     SIMULATED_CAPITAL_USD,
     MAX_RISK_PER_TRADE_PCT,
@@ -273,3 +273,4 @@ def risk_of_ruin(win_rate: float, risk_reward: float,
     n_bets_to_ruin = ruin_threshold / risk_pct
 
     return round(float(ror_ratio ** n_bets_to_ruin), 8)
+

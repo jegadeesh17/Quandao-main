@@ -1,5 +1,5 @@
 """
-quandao_project/strategies/multi_factor.py
+quandao_public/strategies/multi_factor.py
 ============================================
 Multi-factor composite scoring, IC-weighted combination, sector neutralization,
 and PCA statistical arbitrage signal generation.
@@ -40,7 +40,7 @@ WHAT EACH FUNCTION DOES:
         stocks relative to their principal component factor model.
 
 USAGE:
-    from quandao_project.strategies.multi_factor import (
+    from quandao_public.strategies.multi_factor import (
         generate_multi_factor_composite,
         generate_directional_signal_from_composite,
         neutralize_factor,
@@ -486,3 +486,4 @@ def generate_pca_stat_arb_signals(panel_df: pd.DataFrame,
     except Exception as e:
         print(f"[generate_pca_stat_arb_signals] Error: {e}")
         return pd.DataFrame()
+

@@ -1,5 +1,5 @@
 """
-quandao_project/strategies/cost_model.py
+quandao_public/strategies/cost_model.py
 ==========================================
 Realistic NSE transaction cost model — the difference between a toy backtest
 and a production-grade one.
@@ -22,7 +22,7 @@ NSE COST COMPONENTS (FY2025-26):
     6. GST               — 18% on (brokerage + exchange charge + SEBI fee)
 
 USAGE:
-    from quandao_project.strategies.cost_model import compute_round_trip_cost
+    from quandao_public.strategies.cost_model import compute_round_trip_cost
 
     cost = compute_round_trip_cost(entry_price=24500, exit_price=24550,
                                    quantity=75, instrument='futures')
@@ -30,7 +30,7 @@ USAGE:
     print(cost['total_cost_inr'])  # Cost in rupees
 """
 
-from quandao_project.config import (
+from quandao_public.config import (
     BROKERAGE_PCT, BROKERAGE_CAP_INR,
     STT_SELL_PCT, STT_OPTIONS_SELL_PCT,
     EXCHANGE_CHARGE_PCT, SEBI_FEE_PCT,
@@ -190,3 +190,4 @@ def cost_adjusted_pnl(raw_pnl_pts: float,
     exit_price = entry_price + raw_pnl_pts
     costs = compute_round_trip_cost(entry_price, exit_price, quantity, instrument)
     return round(raw_pnl_pts - costs['total_cost_pts'], 4)
+

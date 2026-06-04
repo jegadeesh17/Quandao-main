@@ -1,5 +1,5 @@
 """
-quandao_project/execution/order_executor.py
+quandao_public/execution/order_executor.py
 =============================================
 Paper trading execution engine with Transaction Cost Analysis (TCA).
 
@@ -20,11 +20,11 @@ SIMULATED CAPITAL:
     Forex/MT5:  $1,000    (SIMULATED_CAPITAL_USD)
 
 PAPER TRADE LOG FORMAT:
-    All trades are appended to quandao_project/results/paper_trades.json
+    All trades are appended to quandao_public/results/paper_trades.json
     as a JSON array. Each entry is one complete trade (entry OR exit OR combined).
 
 USAGE:
-    from quandao_project.execution.order_executor import place_order_dry_run, run_tca_simulation
+    from quandao_public.execution.order_executor import place_order_dry_run, run_tca_simulation
 
     # Simulate placing a buy order
     order = place_order_dry_run(
@@ -45,13 +45,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from quandao_project.config import (
+from quandao_public.config import (
     DRY_RUN,
     SIMULATED_CAPITAL_INR,
     SIMULATED_CAPITAL_USD,
     PAPER_TRADE_LOG_PATH,
 )
-from quandao_project.strategies.cost_model import compute_round_trip_cost
+from quandao_public.strategies.cost_model import compute_round_trip_cost
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -168,7 +168,7 @@ def _estimate_single_leg_cost(price: float, qty: int,
                                 side: str, instrument: str) -> float:
     """Estimate single-leg transaction cost in ₹."""
     try:
-        from quandao_project.strategies.cost_model import compute_leg_cost
+        from quandao_public.strategies.cost_model import compute_leg_cost
         leg = compute_leg_cost(price, qty, side, instrument)
         return leg['total_inr']
     except Exception:
@@ -428,3 +428,4 @@ def _estimate_market_impact(price: float, quantity: int,
 
     except Exception:
         return round(price * quantity * 0.001, 4)
+

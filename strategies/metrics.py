@@ -1,5 +1,5 @@
 """
-quandao_project/strategies/metrics.py
+quandao_public/strategies/metrics.py
 ======================================
 Shared performance metrics library — the single source of truth for ALL
 risk-adjusted return calculations across every strategy in Quandao.
@@ -18,7 +18,7 @@ INTERVIEW ANSWERS EMBEDDED IN DOCSTRINGS:
     - Why include zero-return days in Sharpe? → Prevents inflation by only counting trade days.
 
 USAGE:
-    from quandao_project.strategies.metrics import compute_all_metrics
+    from quandao_public.strategies.metrics import compute_all_metrics
 
     result = compute_all_metrics(trades=trade_list, daily_returns=daily_pnl_series)
     print(result['sharpe_ratio'], result['sortino_ratio'])
@@ -436,3 +436,4 @@ def _empty_metrics() -> dict:
         'calmar_ratio', 'recovery_factor', 'max_drawdown',
         'max_drawdown_duration_days', 'var_95', 'cvar_95',
     ]}
+

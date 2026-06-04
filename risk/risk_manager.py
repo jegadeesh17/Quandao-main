@@ -1,5 +1,5 @@
 """
-quandao_project/risk/risk_manager.py
+quandao_public/risk/risk_manager.py
 ======================================
 Portfolio-level risk guardrails for the Quandao simulated paper trading system.
 
@@ -21,14 +21,14 @@ ALL FUNCTIONS ARE PURE:
     No global state modifications. Easy to audit. Easy to explain.
 
 USAGE:
-    from quandao_project.risk.risk_manager import (
+    from quandao_public.risk.risk_manager import (
         max_drawdown_halt, check_portfolio_delta, scale_position_for_volatility
     )
 """
 
 import numpy as np
 import pandas as pd
-from quandao_project.config import (
+from quandao_public.config import (
     SIMULATED_CAPITAL_INR,
     MAX_DRAWDOWN_HALT,
     MAX_PORTFOLIO_DELTA,
@@ -311,3 +311,4 @@ def portfolio_risk_summary(positions: list,
             'All risk checks passed.'
         ),
     }
+

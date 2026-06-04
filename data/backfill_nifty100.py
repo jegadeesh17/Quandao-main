@@ -11,10 +11,10 @@ _project_root = str(_file_path.parent.parent.parent)
 if _project_root not in sys.path:
     sys.path.append(_project_root)
 
-# Import existing fetch logic from quandao_project.data.fetch
-from quandao_project.data.fetch import fetch_between, format_for_upsert, upsert_candles, DATABASE_URL, DAILY_START_DATE, IST
+# Import existing fetch logic from quandao_public.data.fetch
+from quandao_public.data.fetch import fetch_between, format_for_upsert, upsert_candles, DATABASE_URL, DAILY_START_DATE, IST
 
-from quandao_project.data.universe import NIFTY_100_STOCKS
+from quandao_public.data.universe import NIFTY_100_STOCKS
 
 def main():
     print(f"\n{'='*50}")
@@ -55,3 +55,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

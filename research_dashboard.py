@@ -1,7 +1,7 @@
 import sys
 import os
 
-# Ensure the parent directory is in sys.path so 'quandao_project' can be found
+# Ensure the parent directory is in sys.path so 'quandao_public' can be found
 current_dir = os.path.dirname(os.path.abspath(__file__))
 parent_dir = os.path.dirname(current_dir)
 if parent_dir not in sys.path:
@@ -14,11 +14,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta, timezone
 
-from quandao_project.strategies.cpcv_validation import run_cpcv_backtest, compute_dsr, compute_prob_dsr
-from quandao_project.data.database import load_ohlcv
-from quandao_project.data.factor_engine import compute_all_price_factors
-from quandao_project.strategies.multi_factor import generate_multi_factor_composite, generate_directional_signal_from_composite, neutralize_factor
-from quandao_project.strategies.swing_signals import (
+from quandao_public.strategies.cpcv_validation import run_cpcv_backtest, compute_dsr, compute_prob_dsr
+from quandao_public.data.database import load_ohlcv
+from quandao_public.data.factor_engine import compute_all_price_factors
+from quandao_public.strategies.multi_factor import generate_multi_factor_composite, generate_directional_signal_from_composite, neutralize_factor
+from quandao_public.strategies.swing_signals import (
     detect_hh_hl_structure,
     detect_daily_hl,
     is_at_higher_low,
@@ -258,7 +258,7 @@ def main():
             r"Only setups with SWING\_SCORE ≥ 50 and R:R ≥ 1.5 are displayed."
         )
 
-        from quandao_project.data.universe import NIFTY_SECTOR_MAP, NIFTY_100_STOCKS
+        from quandao_public.data.universe import NIFTY_SECTOR_MAP, NIFTY_100_STOCKS
         nifty_symbols = NIFTY_100_STOCKS
 
         # ── Sidebar config ────────────────────────────────────────────────────
@@ -564,3 +564,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

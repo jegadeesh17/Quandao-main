@@ -1,5 +1,5 @@
 """
-quandao_project/strategies/options_pricing.py
+quandao_public/strategies/options_pricing.py
 ===============================================
 Standalone options math module: Black-Scholes pricing, Greeks, and Implied Volatility.
 
@@ -28,7 +28,7 @@ INTERVIEW GOLD: Be ready to explain:
        Falls back to bisection when Vega is near zero (deep ITM/OTM options).
 
 USAGE:
-    from quandao_project.strategies.options_pricing import (
+    from quandao_public.strategies.options_pricing import (
         black_scholes, implied_volatility, select_strike_by_delta
     )
 
@@ -421,3 +421,4 @@ def vol_richness(current_iv: float, hist_vol_252d: float) -> str:
         return f'CHEAP ({spread*100:.1f}% discount) — prefer BUYING'
     else:
         return f'FAIR ({spread*100:.1f}% spread) — neutral bias'
+

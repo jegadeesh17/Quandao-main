@@ -3,7 +3,7 @@ backend/results/report.py
 Standardised result-saving utility for all Quandao strategies.
 
 Usage from a strategy:
-    from quandao_project.results.report import save_json, save_summary
+    from quandao_public.results.report import save_json, save_summary
 
     result = my_strategy.run(df, ...)
     save_json(result, "moon_phase_2025")
@@ -140,3 +140,4 @@ def save_summary(metrics: dict, filename: str) -> Path:
 
     print(f"[results] Summary saved -> {out_path}")
     return out_path
+
