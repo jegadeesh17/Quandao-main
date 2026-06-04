@@ -18,6 +18,21 @@ from quandao_project.strategies.cpcv_validation import run_cpcv_backtest, comput
 from quandao_project.data.database import load_ohlcv
 from quandao_project.data.factor_engine import compute_all_price_factors
 from quandao_project.strategies.multi_factor import generate_multi_factor_composite, generate_directional_signal_from_composite, neutralize_factor
+from quandao_project.strategies.swing_signals import (
+    detect_hh_hl_structure,
+    detect_daily_hl,
+    is_at_higher_low,
+    detect_daily_candle_pattern,
+    compute_fib_levels,
+    compute_ema_stack,
+    volume_confirmation,
+    compute_swing_composite_score,
+    compute_rsi,
+    compute_risk_reward,
+    generate_simulated_ohlcv,
+    aggregate_weekly,
+    check_liquidity_guard,
+)
 
 st.set_page_config(page_title="Quandao Quantitative Research Platform", layout="wide")
 
@@ -28,7 +43,7 @@ def generate_dummy_returns(n_days=1260, mean_ret=0.0005, std_ret=0.015):
 
 def main():
     st.title("🧪 Quandao Quantitative Platform")
-    st.markdown("Institutional-grade strategy validation, Combinatorial Purged Cross-Validation (CPCV), and Multi-Factor Screener.")
+    st.markdown("Institutional-grade strategy validation · Multi-Timeframe Swing Screener · GARCH Vol Regime · PCA Stat-Arb · Execution TCA")
     
     # 5-Factor Registry: code name -> human readable name
     FACTOR_REGISTRY = {
@@ -39,7 +54,7 @@ def main():
         "factor_vpt_accumulation": "VPT Institutional Accumulation (63-Day)"
     }
     
-    tab1, tab2 = st.tabs(["🧪 Alpha Research (CPCV)", "🎯 Monthly Stock Screener"])
+    tab1, tab2 = st.tabs(["🧪 Alpha Research (CPCV)", "🎯 Swing Trade Scanner"])
     
     with tab1:
         st.header("Combinatorial Purged Cross-Validation & DSR")
@@ -234,335 +249,318 @@ def main():
                 }).background_gradient(subset=["Spearman IC (Mean)", "Information Ratio (IR)"], cmap="Blues"))
                 
     with tab2:
-        st.header("🎯 Top 15–20 Nifty 50 Swing Trade Screener (Sector-Neutralized)")
+        st.header("🎯 Multi-Timeframe Swing Trade Scanner")
         st.markdown(
-            "Scans the Nifty 50 database, computes all 8 pricing/accumulation factors, "
-            "**neutralizes each factor within its GICS sector** to remove sector-concentration bias, "
-            "then ranks stocks using weighted neutralized scores."
+            "Mirrors a practitioner's exact workflow: **Weekly HH/HL structure** → "
+            "**Daily candle pattern** at the HL zone → "
+            "**Volume > 20-day VMA** confirmation → "
+            "**Fib 0.618 / EMA stack / RSI 40–65** confluence. "
+            r"Only setups with SWING\_SCORE ≥ 50 and R:R ≥ 1.5 are displayed."
         )
 
-        # ── Hardcoded Nifty 50 sector map (symbol → GICS-style sector) ──────────
-        NIFTY_SECTOR_MAP = {
-            "NSE:RELIANCE-EQ":    "Energy",
-            "NSE:TCS-EQ":         "IT",
-            "NSE:HDFCBANK-EQ":    "Financial Services",
-            "NSE:ICICIBANK-EQ":   "Financial Services",
-            "NSE:INFY-EQ":        "IT",
-            "NSE:ITC-EQ":         "FMCG",
-            "NSE:SBIN-EQ":        "Financial Services",
-            "NSE:BHARTIARTL-EQ": "Telecom",
-            "NSE:BAJFINANCE-EQ":  "Financial Services",
-            "NSE:LT-EQ":          "Capital Goods",
-            "NSE:ASIANPAINT-EQ":  "Consumer Durables",
-            "NSE:HCLTECH-EQ":     "IT",
-            "NSE:AXISBANK-EQ":    "Financial Services",
-            "NSE:MARUTI-EQ":      "Auto",
-            "NSE:SUNPHARMA-EQ":   "Pharma",
-            "NSE:ADANIENT-EQ":    "Energy",
-            "NSE:ADANIPORTS-EQ":  "Infrastructure",
-            "NSE:APOLLOHOSP-EQ":  "Healthcare",
-            "NSE:CIPLA-EQ":       "Pharma",
-            "NSE:TATASTEEL-EQ":   "Metals",
-            "NSE:WIPRO-EQ":       "IT",
-            "NSE:ULTRACEMCO-EQ":  "Cement",
-            "NSE:NESTLEIND-EQ":   "FMCG",
-            "NSE:POWERGRID-EQ":   "Power",
-            "NSE:NTPC-EQ":        "Power",
-            "NSE:TATAMOTORS-EQ":  "Auto",
-            "NSE:JSWSTEEL-EQ":    "Metals",
-            "NSE:KOTAKBANK-EQ":   "Financial Services",
-            "NSE:HINDUNILVR-EQ":  "FMCG",
-            "NSE:BAJAJFINSV-EQ":  "Financial Services",
-            "NSE:DRREDDY-EQ":     "Pharma",
-            "NSE:GRASIM-EQ":      "Cement",
-            "NSE:HINDALCO-EQ":    "Metals",
-            "NSE:BPCL-EQ":        "Energy",
-            "NSE:ONGC-EQ":        "Energy",
-            "NSE:M&M-EQ":         "Auto",
-            "NSE:DIVISLAB-EQ":    "Pharma",
-            "NSE:EICHERMOT-EQ":   "Auto",
-            "NSE:COALINDIA-EQ":   "Metals",
-            "NSE:HEROMOTOCO-EQ":  "Auto",
-            "NSE:BRITANNIA-EQ":   "FMCG",
-            "NSE:SHREECEM-EQ":    "Cement",
-            "NSE:INDUSINDBK-EQ":  "Financial Services",
-            "NSE:SBILIFE-EQ":     "Financial Services",
-            "NSE:HDFCLIFE-EQ":    "Financial Services",
-            "NSE:BAJAJ-AUTO-EQ":  "Auto",
-            "NSE:TATACONSUM-EQ":  "FMCG",
-            "NSE:UPL-EQ":         "Chemicals",
-            "NSE:TECHM-EQ":       "IT",
-        }
+        from quandao_project.data.universe import NIFTY_SECTOR_MAP, NIFTY_100_STOCKS
+        nifty_symbols = NIFTY_100_STOCKS
 
-        # ── Hardcoded Nifty 50 PE map (symbol → GICS-style trailing PE) ──────────
-        NIFTY_PE_MAP = {
-            "NSE:RELIANCE-EQ":    25.4,
-            "NSE:TCS-EQ":         30.2,
-            "NSE:HDFCBANK-EQ":    18.5,
-            "NSE:ICICIBANK-EQ":   17.8,
-            "NSE:INFY-EQ":        26.1,
-            "NSE:ITC-EQ":         28.5,
-            "NSE:SBIN-EQ":        11.2,
-            "NSE:BHARTIARTL-EQ": 45.0,
-            "NSE:BAJFINANCE-EQ":  32.4,
-            "NSE:LT-EQ":          35.8,
-            "NSE:ASIANPAINT-EQ":  55.6,
-            "NSE:HCLTECH-EQ":     24.5,
-            "NSE:AXISBANK-EQ":    13.9,
-            "NSE:MARUTI-EQ":      28.2,
-            "NSE:SUNPHARMA-EQ":   38.5,
-            "NSE:ADANIENT-EQ":    85.0,
-            "NSE:ADANIPORTS-EQ":  35.0,
-            "NSE:APOLLOHOSP-EQ":  75.0,
-            "NSE:CIPLA-EQ":       29.5,
-            "NSE:TATASTEEL-EQ":   15.0,
-            "NSE:WIPRO-EQ":       22.0,
-            "NSE:ULTRACEMCO-EQ":  42.0,
-            "NSE:NESTLEIND-EQ":   78.0,
-            "NSE:POWERGRID-EQ":   16.0,
-            "NSE:NTPC-EQ":        14.5,
-            "NSE:TATAMOTORS-EQ":  12.0,
-            "NSE:JSWSTEEL-EQ":    20.0,
-            "NSE:KOTAKBANK-EQ":   21.0,
-            "NSE:HINDUNILVR-EQ":  60.0,
-            "NSE:BAJAJFINSV-EQ":  28.0,
-            "NSE:DRREDDY-EQ":     18.0,
-            "NSE:GRASIM-EQ":      26.0,
-            "NSE:HINDALCO-EQ":    13.0,
-            "NSE:BPCL-EQ":        10.0,
-            "NSE:ONGC-EQ":        8.0,
-            "NSE:M&M-EQ":         "Auto", # Let's keep it numeric
-            "NSE:M&M-EQ":         22.0,
-            "NSE:DIVISLAB-EQ":    52.0,
-            "NSE:EICHERMOT-EQ":   31.0,
-            "NSE:COALINDIA-EQ":   9.0,
-            "NSE:HEROMOTOCO-EQ":  24.0,
-            "NSE:BRITANNIA-EQ":   50.0,
-            "NSE:SHREECEM-EQ":    44.0,
-            "NSE:INDUSINDBK-EQ":  12.0,
-            "NSE:SBILIFE-EQ":     72.0,
-            "NSE:HDFCLIFE-EQ":    82.0,
-            "NSE:BAJAJ-AUTO-EQ":  27.0,
-            "NSE:TATACONSUM-EQ":  68.0,
-            "NSE:UPL-EQ":         16.0,
-            "NSE:TECHM-EQ":       23.0,
-        }
-
-        # ── Active factors that will be neutralized ──────────────────────────────
-        ACTIVE_NEUTRALIZED_FACTORS = [
-            "factor_amihud",
-            "factor_sma100_pullback",
-            "factor_quarterly_lowvol",
-        ]
-
-        st.subheader("⚖️ Adjust Factor Importance (Weights)")
-
-        # Render sliders in columns grouped logically
-        st.markdown("#### Core Factors (Original)")
-        c1, c2 = st.columns(2)
-        # Defaults: Amihud 45% | SMA-100 Pullback 45% | Quarterly Low Vol 10% | all others 0%
-        w_mom     = c1.slider("Momentum (12-1) Weight",            0.0, 1.0, 0.00, step=0.05)
-        w_liq     = c2.slider("Liquidity (AMIHUD) Weight",          0.0, 1.0, 0.45, step=0.05)
-
-        st.markdown("#### Expanded Medium-Term Alpha Factors (New)")
-        c3, c4, c5 = st.columns(3)
-        w_q_vol    = c3.slider("Quarterly Low Volatility Weight",             0.0, 1.0, 0.10, step=0.05)
-        w_sma_pull = c4.slider("SMA-100 Pullback Distance Weight",   0.0, 1.0, 0.45, step=0.05)
-        w_vpt_acc  = c5.slider("VPT Volume-Price Trend Weight",       0.0, 1.0, 0.00, step=0.05)
-
-        # Calculate sum and normalise
-        raw_weights = {
-            "factor_momentum":         w_mom,
-            "factor_amihud":           w_liq,
-            "factor_quarterly_lowvol": w_q_vol,
-            "factor_sma100_pullback":  w_sma_pull,
-            "factor_vpt_accumulation": w_vpt_acc,
-        }
-
-        sum_w = sum(raw_weights.values())
-        if sum_w == 0:
-            factor_weights = {k: 1.0 / len(raw_weights) for k in raw_weights}
-        else:
-            factor_weights = {k: v / sum_w for k, v in raw_weights.items()}
-
-        # Display normalized weight allocations
-        st.markdown("#### Normalized Allocations")
-        alloc_cols = st.columns(len(FACTOR_REGISTRY))
-        for idx, (k, name) in enumerate(FACTOR_REGISTRY.items()):
-            alloc_cols[idx].metric(name[:18] + "..", f"{factor_weights[k]*100:.1f}%")
-
-        st.info(
-            "🔬 **Sector Neutralization is ON** — each active factor is de-meaned within its "
-            "GICS sector before scoring, eliminating IT / Banking rally distortions."
+        # ── Sidebar config ────────────────────────────────────────────────────
+        st.sidebar.header("2. Swing Scanner Settings")
+        min_score = st.sidebar.slider(
+            "Minimum SWING_SCORE to display", 30, 100, 75, step=5,
+            help="Setups below this score are filtered out."
         )
+        min_rr = st.sidebar.slider(
+            "Minimum Risk-Reward (R:R)", 1.0, 3.0, 1.5, step=0.1,
+            help="Only display setups where Target/Stop gives at least this R:R ratio."
+        )
+        hl_tolerance = st.sidebar.slider(
+            "HL Zone Tolerance (%)", 1.0, 6.0, 3.0, step=0.5,
+            help="How close price must be to the weekly Higher Low to qualify."
+        ) / 100.0
 
-        if st.button("Run Nifty 50 Screener", key="run_screener_btn"):
-            with st.spinner("Loading DB, computing factors, neutralizing within sectors..."):
+        st.sidebar.markdown("---")
+        st.sidebar.subheader("Score Breakdown (Max 100)")
+        st.sidebar.markdown("""
+| Signal | Pts |
+|---|---|
+| Volume > 1.2 * VMA_20 | 20 |
+| Weekly HH+HL | 15 |
+| Prior HL Support | 15 |
+| RSI 40-65 & Up | 15 |
+| EMA 21>50>200 | 10 |
+| Fib 0.50-0.618 | 10 |
+| Candle Pattern | 10 |
+| Daily Low > Prev | 5 |
+        """)
 
-                # ── Full Nifty 50 universe ───────────────────────────────────────
-                nifty_symbols = list(NIFTY_SECTOR_MAP.keys())
+        if st.button("🔍 Run Swing Scanner", key="run_swing_scanner_btn", type="primary"):
+            with st.spinner("Loading data and computing swing signals..."):
+                scanner_rows = []
+                db_loaded = 0
+                sim_loaded = 0
 
-                latest_factors = {}
-                db_success = False
+                for symbol in nifty_symbols:
+                    sector = NIFTY_SECTOR_MAP.get(symbol, "Other")
 
-                try:
-                    for symbol in nifty_symbols:
-                        df = load_ohlcv(
+                    # ─ 1. Load daily data (DB or simulate) ────────────────────
+                    daily_df = pd.DataFrame()
+                    try:
+                        daily_df = load_ohlcv(
                             symbol, resolution="D",
-                            from_date=(datetime.now(timezone.utc) - timedelta(days=400)).strftime("%Y-%m-%d"),
-                            to_date=datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M:%S"),
+                            from_date=(datetime.now(timezone.utc) - timedelta(days=365)).strftime("%Y-%m-%d"),
+                            to_date=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                         )
-                        if not df.empty and len(df) > 100:
-                            # 1. Calculate Local Technical Filters
-                            df["sma_100"] = df["close"].rolling(100).mean()
-                            
-                            # Standard 14-day RSI
-                            delta = df["close"].diff()
-                            gain = delta.clip(lower=0)
-                            loss = -delta.clip(upper=0)
-                            avg_gain = gain.ewm(alpha=1/14, adjust=False).mean()
-                            avg_loss = loss.ewm(alpha=1/14, adjust=False).mean()
-                            rs = avg_gain / (avg_loss + 1e-8)
-                            df["rsi_14"] = 100 - (100 / (1 + rs))
+                    except Exception:
+                        pass
 
-                            df_factors = compute_all_price_factors(df)
-                            
-                            # Keep metrics for latest row
-                            latest_row = df_factors.iloc[-1].copy()
-                            latest_row["close"] = df["close"].iloc[-1]
-                            latest_row["sma_100"] = df["sma_100"].iloc[-1]
-                            latest_row["rsi_14"] = df["rsi_14"].iloc[-1]
-                            
-                            latest_factors[symbol] = latest_row
-                            db_success = True
-                except Exception:
-                    pass
-
-                # ── Helper: attach sector + run per-factor neutralization ────────
-                def _build_neutralized_df(cs_df: pd.DataFrame) -> pd.DataFrame:
-                    """Attach sector column, neutralize active factors within sector."""
-                    cs_df = cs_df.copy()
-                    cs_df["Sector"] = cs_df.index.map(
-                        lambda sym: NIFTY_SECTOR_MAP.get(sym, "Other")
-                    )
-                    cs_df["trailing_pe"] = cs_df.index.map(
-                        lambda sym: NIFTY_PE_MAP.get(sym, 25.0)
-                    )
-
-                    # Compute industry median and overvalued threshold
-                    pe_median = cs_df.groupby('Sector')['trailing_pe'].transform('median')
-                    overvalued_threshold = 1.3 * pe_median
-
-                    # 2. Conditional Rejection Logic
-                    rejection_reasons = []
-                    for idx, row in cs_df.iterrows():
-                        reason = "PASSED (Clean Setup)"
-                        if row["close"] < row["sma_100"]:
-                            reason = "REJECT: Below 100-SMA Downtrend"
-                        elif row["rsi_14"] > 70:
-                            reason = "REJECT: Overbought RSI Crowded"
-                        elif row["close"] > (1.15 * row["sma_100"]):
-                            reason = "REJECT: Overextended from Trend Anchor"
-                        elif row["trailing_pe"] > overvalued_threshold.loc[idx]:
-                            reason = "REJECT: Overvalued vs Industry"
-                        rejection_reasons.append(reason)
-                    
-                    cs_df["REJECTION_REASON"] = rejection_reasons
-
-                    raw_factor_cols  = list(FACTOR_REGISTRY.keys())
-                    neut_factor_cols = []
-
-                    for fcol in raw_factor_cols:
-                        if fcol not in cs_df.columns:
-                            continue
-                        neut_col = fcol + "_neut"
-                        cs_df[neut_col] = neutralize_factor(
-                            cs_df, factor_col=fcol, group_col="Sector"
+                    using_sim = False
+                    if daily_df is None or daily_df.empty or len(daily_df) < 60:
+                        daily_df = generate_simulated_ohlcv(
+                            symbol, n_days=300,
+                            inject_setup=(hash(symbol) % 3 != 0)
                         )
-                        neut_factor_cols.append(neut_col)
+                        using_sim = True
+                        sim_loaded += 1
+                    else:
+                        db_loaded += 1
 
-                    # Build neutralized-factor weights dict (same ratios, neut_ keys)
-                    neut_weights = {
-                        (fcol + "_neut"): wt
-                        for fcol, wt in factor_weights.items()
-                        if (fcol + "_neut") in cs_df.columns
+                    if 'time' in daily_df.columns:
+                        daily_df['time'] = pd.to_datetime(daily_df['time'])
+                        daily_df = daily_df.sort_values('time').reset_index(drop=True)
+
+                    if not check_liquidity_guard(daily_df):
+                        continue
+
+                    # ─ 2. Weekly HH/HL structure ───────────────────────────
+                    weekly_df = aggregate_weekly(daily_df)
+                    hh_hl = detect_hh_hl_structure(weekly_df)
+
+                    current_price = float(daily_df['close'].iloc[-1])
+
+                    at_hl_dict = is_at_higher_low(daily_df)
+                    last_pivot_low = at_hl_dict.get('last_pivot_low', current_price * 0.95)
+
+                    # ─ 3. Daily candle pattern & structure ──────────────────────
+                    daily_hl_confirmed = detect_daily_hl(daily_df)
+                    pattern_confirmed = detect_daily_candle_pattern(daily_df)
+
+                    # ─ 4. Volume confirmation ────────────────────────────────
+                    vol_data = volume_confirmation(daily_df)
+
+                    # ─ 5. Fibonacci levels ───────────────────────────────────
+                    fib_data = compute_fib_levels(daily_df)
+                    swing_high = fib_data.get('swing_high', current_price * 1.08)
+                    target_1272 = fib_data.get('target_1272', current_price * 1.10)
+
+                    # ─ 6. EMA stack ──────────────────────────────────────────
+                    ema_stack = compute_ema_stack(daily_df)
+
+                    # ─ 7. RSI ─────────────────────────────────────────────────
+                    rsi_data = compute_rsi(daily_df)
+
+                    # ─ 8. Composite score ───────────────────────────────────
+                    signals_dict = {
+                        'hh_hl_confirmed': hh_hl.get('hh_hl_confirmed', False),
+                        'daily_hl_confirmed': daily_hl_confirmed,
+                        'at_hl_zone':      at_hl_dict.get('at_hl_zone', False),
+                        'pattern_confirmed': pattern_confirmed,
+                        'vol_confirmed':   vol_data.get('confirmed', False),
+                        'fib_support':     fib_data.get('fib_support', False),
+                        'ema_stack':       ema_stack,
+                        'rsi_confirmed':   rsi_data.get('rsi_confirmed', False),
                     }
-                    cs_df["FINAL_SCORE"] = generate_multi_factor_composite(cs_df, neut_weights)
-                    return cs_df, raw_factor_cols, neut_factor_cols
+                    score_result = compute_swing_composite_score(signals_dict)
+                    swing_score  = score_result['swing_score']
+                    grade        = score_result['grade']
 
-                # Style helper for table outputs
-                def highlight_rejections(row):
-                    if str(row["REJECTION_REASON"]).startswith("REJECT"):
-                        return ["background-color: rgba(255, 0, 0, 0.15)"] * len(row)
+                    # ─ 9. Risk-Reward ──────────────────────────────────────
+                    stop_price   = last_pivot_low * 0.995 if not np.isnan(last_pivot_low) else current_price * 0.95
+                    target_price = max(
+                        target_1272 if not np.isnan(target_1272) else current_price * 1.10,
+                        swing_high if not np.isnan(swing_high) else current_price * 1.08,
+                    )
+                    rr_ratio = compute_risk_reward(current_price, stop_price, target_price)
+
+                    # ─ 10. Setup label ────────────────────────────────────────
+                    if swing_score >= 85:   setup_label = "⭐ A+ PRIME"
+                    elif swing_score >= 70: setup_label = "✅ A  STRONG"
+                    elif swing_score >= 55: setup_label = "🟡 B  DEVELOPING"
+                    elif swing_score >= 40: setup_label = "🟠 C  WEAK"
+                    else:                  setup_label = "❌ REJECT"
+
+                    scanner_rows.append({
+                        "Symbol":        symbol.replace("NSE:", "").replace("-EQ", ""),
+                        "Sector":        sector,
+                        "SETUP":         setup_label,
+                        "SCORE":         swing_score,
+                        "Grade":         grade,
+                        "Weekly HH/HL": "✅" if hh_hl.get('hh_hl_confirmed', False) else "❌",
+                        "Daily HL":     "✅" if daily_hl_confirmed else "❌",
+                        "At HL Zone":   "✅" if at_hl_dict.get('at_hl_zone', False) else "—",
+                        "Pattern":      "✅" if pattern_confirmed else "—",
+                        "Vol Surge":    f"{vol_data.get('vol_ratio', 0):.1f}×" if vol_data.get('confirmed') else "—",
+                        "Fib Support":  "✅" if fib_data.get('fib_support', False) else "—",
+                        "EMA Stack":    "✅" if ema_stack else "❌",
+                        "RSI":          f"{rsi_data.get('rsi_val', np.nan):.1f}" if not np.isnan(rsi_data.get('rsi_val', np.nan)) else "—",
+                        "Entry ₹":      round(current_price, 2),
+                        "Stop ₹":       round(stop_price, 2),
+                        "Target ₹":     round(target_price, 2),
+                        "R:R":          f"1 : {rr_ratio:.1f}" if rr_ratio >= min_rr else f"< {min_rr}",
+                        "R:R_raw":      rr_ratio,
+                        "Source":       "Sim" if using_sim else "Live DB",
+                    })
+
+            # ── Summary cards ─────────────────────────────────────────────────
+            total_scanned = len(scanner_rows)
+            hh_hl_count   = sum(1 for r in scanner_rows if r["Weekly HH/HL"] == "✅")
+            pattern_count = sum(1 for r in scanner_rows if r["Pattern"] != "—")
+            passed_count  = sum(
+                1 for r in scanner_rows
+                if r["SCORE"] >= min_score and r["R:R_raw"] >= min_rr
+            )
+
+            mc1, mc2, mc3, mc4 = st.columns(4)
+            mc1.metric("📋 Scanned",          total_scanned)
+            mc2.metric("📈 HH/HL Confirmed",   hh_hl_count,
+                       delta=f"{hh_hl_count/total_scanned*100:.0f}%")
+            mc3.metric("🕯️ Pattern Detected", pattern_count,
+                       delta=f"{pattern_count/total_scanned*100:.0f}%")
+            mc4.metric("🎯 Final Picks",       passed_count)
+
+            if db_loaded > 0:
+                st.success(f"✅ {db_loaded} symbols from Live DB · {sim_loaded} simulated")
+            else:
+                st.info("📊 Simulated mode (DB not connected) — realistic demo setups injected")
+
+            # ── Filter and rank ────────────────────────────────────────────────
+            scan_df = pd.DataFrame(scanner_rows)
+            display_df = scan_df[
+                (scan_df["SCORE"] >= min_score) &
+                (scan_df["R:R_raw"] >= min_rr)
+            ].sort_values("SCORE", ascending=False).reset_index(drop=True)
+
+            if display_df.empty:
+                st.warning(
+                    f"No setups passed SWING_SCORE ≥ {min_score} and R:R ≥ {min_rr}. "
+                    "Try lowering thresholds in the sidebar."
+                )
+            else:
+                st.markdown(f"### 🏆 Top Swing Setups · {len(display_df)} of {total_scanned} passed")
+
+                table_cols = [
+                    "Symbol", "Sector", "SETUP", "SCORE",
+                    "Weekly HH/HL", "Daily HL", "At HL Zone", "Pattern",
+                    "Vol Surge", "Fib Support", "EMA Stack", "RSI",
+                    "Entry ₹", "Stop ₹", "Target ₹", "R:R", "Source"
+                ]
+
+                def _color_setup(row):
+                    s = row["SCORE"]
+                    if s >= 85:
+                        return ["background-color: rgba(0,200,100,0.18)"] * len(row)
+                    elif s >= 70:
+                        return ["background-color: rgba(0,150,255,0.13)"] * len(row)
+                    elif s >= 55:
+                        return ["background-color: rgba(255,200,0,0.10)"] * len(row)
                     return [""] * len(row)
 
-                # ── Real DB path ─────────────────────────────────────────────────
-                if db_success and len(latest_factors) > 0:
-                    cross_section_df = pd.DataFrame(latest_factors).T
-                    cross_section_df, raw_fcols, neut_fcols = _build_neutralized_df(cross_section_df)
-                    top_stocks = cross_section_df.sort_values("FINAL_SCORE", ascending=False).head(20)
+                styled = (
+                    display_df[table_cols]
+                    .style
+                    .apply(_color_setup, axis=1)
+                    .background_gradient(subset=["SCORE"], cmap="RdYlGn", vmin=40, vmax=100)
+                    .format({"Entry ₹": "{:.2f}", "Stop ₹": "{:.2f}", "Target ₹": "{:.2f}"})
+                )
+                st.dataframe(styled, use_container_width=True)
 
-                    st.success(f"✅ Sector-Neutralized Screener Complete! ({len(cross_section_df)} stocks ranked)")
+                # ── Deep dive: top pick ───────────────────────────────────────
+                top = display_df.iloc[0]
+                top_full = scan_df[scan_df["Symbol"] == top["Symbol"]].iloc[0]
+                st.markdown("---")
+                st.markdown(f"### 🔬 Deep Dive: **{top['Symbol']}** · Score {top['SCORE']}/100")
 
-                    display_cols = ["REJECTION_REASON", "Sector"] + raw_fcols + neut_fcols + ["FINAL_SCORE"]
-                    display_cols = [c for c in display_cols if c in top_stocks.columns]
+                bd_col, rr_col = st.columns([1, 1])
 
-                    fmt_map = {c: "{:.4f}" for c in raw_fcols + neut_fcols if c in top_stocks.columns}
-                    fmt_map["FINAL_SCORE"] = "{:.4f}"
-
-                    st.markdown("**Top 15–20 Stocks by Sector-Neutralized Composite Score**")
-                    st.dataframe(
-                        top_stocks[display_cols]
-                        .style
-                        .apply(highlight_rejections, axis=1)
-                        .background_gradient(subset=["FINAL_SCORE"], cmap="Greens")
-                        .format(fmt_map)
-                    )
-
-                    # Sector distribution of top picks
-                    st.markdown("#### Sector Distribution of Top Picks")
-                    sector_counts = top_stocks["Sector"].value_counts().reset_index()
-                    sector_counts.columns = ["Sector", "Count"]
-                    st.bar_chart(sector_counts.set_index("Sector"))
-
-                # ── Simulated fallback path ──────────────────────────────────────
-                else:
-                    st.info("⚠️ Could not load 400 days of data from DB. Displaying Simulated Result with sector neutralization applied.")
-
-                    np.random.seed(17)
-                    mock_data = {
-                        "close":                    np.random.uniform(500, 3000, len(nifty_symbols)),
-                        "sma_100":                  np.random.uniform(500, 3000, len(nifty_symbols)),
-                        "rsi_14":                   np.random.uniform(30, 85, len(nifty_symbols)),
-                        "factor_momentum":         np.random.uniform(-0.1,    0.6,    len(nifty_symbols)),
-                        "factor_amihud":            np.random.uniform(-100,   -10,     len(nifty_symbols)),
-                        "factor_quarterly_lowvol":  np.random.uniform(-0.02,  -0.005,  len(nifty_symbols)),
-                        "factor_sma100_pullback":   np.random.uniform(-0.1,    0.1,    len(nifty_symbols)),
-                        "factor_vpt_accumulation":  np.random.uniform(-100000, 500000, len(nifty_symbols)),
+                with bd_col:
+                    st.markdown("#### Signal Breakdown")
+                    rsi_ok = False
+                    try:
+                        rsi_ok = 40.0 <= float(str(top_full["RSI"]).replace("—", "0")) <= 65.0
+                    except (ValueError, TypeError):
+                        pass
+                    breakdown_data = {
+                        "Volume > 1.2 * VMA_20 (20 pts)": 20 if top_full["Vol Surge"] != "—" else 0,
+                        "Weekly Trend IS High-High + High-Low (15 pts)": 15 if top_full["Weekly HH/HL"] == "✅" else 0,
+                        "Price IS At Prior HL Support Zone (15 pts)": 15 if top_full["At HL Zone"] == "✅" else 0,
+                        "Daily RSI_14 IS between 40 and 65 AND Up (15 pts)": 15 if top_full["RSI"] != "—" else 0,
+                        "Daily EMA_21 > EMA_50 > EMA_200 (10 pts)": 10 if top_full["EMA Stack"] == "✅" else 0,
+                        "Price Retracement IS between 0.50 and 0.618 (10 pts)": 10 if top_full["Fib Support"] != "—" else 0,
+                        "Quantified Candle Pattern IS True (10 pts max)": 10 if top_full["Pattern"] != "—" else 0,
+                        "Daily Candle Low > Yesterday Low (5 pts)": 5 if top_full["Daily HL"] == "✅" else 0,
                     }
-                    mock_df = pd.DataFrame(mock_data, index=nifty_symbols)
-                    mock_df, raw_fcols, neut_fcols = _build_neutralized_df(mock_df)
-                    mock_top = mock_df.sort_values("FINAL_SCORE", ascending=False).head(20)
-
-                    display_cols = ["REJECTION_REASON", "Sector"] + raw_fcols + neut_fcols + ["FINAL_SCORE"]
-                    display_cols = [c for c in display_cols if c in mock_top.columns]
-
-                    fmt_map = {c: "{:.4f}" for c in raw_fcols + neut_fcols if c in mock_top.columns}
-                    fmt_map["FINAL_SCORE"] = "{:.4f}"
-
-                    st.markdown("**Top 15–20 Stocks (Simulated) — Sector-Neutralized**")
+                    bd_df = pd.DataFrame(
+                        list(breakdown_data.items()), columns=["Signal", "Points"]
+                    )
                     st.dataframe(
-                        mock_top[display_cols]
-                        .style
-                        .apply(highlight_rejections, axis=1)
-                        .background_gradient(subset=["FINAL_SCORE"], cmap="Greens")
-                        .format(fmt_map)
+                        bd_df.style.background_gradient(subset=["Points"], cmap="Greens"),
+                        use_container_width=True, hide_index=True,
                     )
 
-                    st.markdown("#### Sector Distribution of Top Picks (Simulated)")
-                    sector_counts = mock_top["Sector"].value_counts().reset_index()
-                    sector_counts.columns = ["Sector", "Count"]
-                    st.bar_chart(sector_counts.set_index("Sector"))
+                with rr_col:
+                    st.markdown("#### Trade Plan")
+                    e_p = top["Entry ₹"];  s_p = top["Stop ₹"]
+                    t_p = top["Target ₹"]; rr  = top["R:R_raw"]
+                    t1, t2, t3, t4 = st.columns(4)
+                    t1.metric("Entry",  f"₹{e_p:.2f}")
+                    t2.metric("Stop",   f"₹{s_p:.2f}",   delta=f"−₹{e_p-s_p:.2f}",  delta_color="inverse")
+                    t3.metric("Target", f"₹{t_p:.2f}",   delta=f"+₹{t_p-e_p:.2f}")
+                    t4.metric("R:R",    f"1 : {rr:.1f}")
+
+                    st.markdown("#### Entry Rationale")
+                    items = []
+                    if top_full["Weekly HH/HL"] == "✅":
+                        items.append("📈 **Weekly uptrend** — Higher-Highs + Higher-Lows confirmed")
+                    if top_full["At HL Zone"] == "✅":
+                        items.append("📍 **At Higher-Low zone** — structural support, tight stop")
+                    if top_full["Pattern"] != "—":
+                        items.append(f"🕯️ **{top_full['Pattern']}** — bullish reversal on daily")
+                    if top_full["Vol Surge"] != "—":
+                        items.append(f"🔊 **Volume surge {top_full['Vol Surge']}** — institutional confirmation")
+                    if top_full["Fib Support"] != "—":
+                        items.append(f"📐 **{top_full['Fib Support']}** — Fibonacci confluence")
+                    if top_full["EMA Stack"] == "✅":
+                        items.append("📊 **EMA 21>50>200** — multi-timeframe trend aligned")
+                    for item in items:
+                        st.markdown(f"- {item}")
+
+                # ── Sector chart ───────────────────────────────────────────────
+                st.markdown("---")
+                st.markdown("### 🏭 Sector Distribution of Qualifying Setups")
+                sec_cnt = display_df["Sector"].value_counts().reset_index()
+                sec_cnt.columns = ["Sector", "Count"]
+                fig_s, ax_s = plt.subplots(figsize=(10, 3))
+                bars = ax_s.barh(sec_cnt["Sector"], sec_cnt["Count"],
+                                 color="#1f77b4", edgecolor="white", alpha=0.85)
+                ax_s.set_xlabel("Qualifying Setups")
+                ax_s.set_title("Swing Setups by Sector", fontsize=12)
+                for bar in bars:
+                    ax_s.text(bar.get_width() + 0.05,
+                              bar.get_y() + bar.get_height() / 2,
+                              str(int(bar.get_width())), va="center", fontsize=9)
+                ax_s.grid(True, axis="x", linestyle="--", alpha=0.4)
+                plt.tight_layout()
+                st.pyplot(fig_s)
+
+                # ── Grade distribution ──────────────────────────────────────────
+                grade_cnt = display_df["Grade"].value_counts()
+                grade_ord = [g for g in ["A+", "A", "B", "C"] if g in grade_cnt.index]
+                if grade_ord:
+                    st.markdown("### 📊 Setup Grade Distribution")
+                    g_cols = st.columns(len(grade_ord))
+                    for i, g in enumerate(grade_ord):
+                        v = int(grade_cnt[g])
+                        g_cols[i].metric(
+                            f"Grade {g}", v,
+                            delta=f"{v/len(display_df)*100:.0f}% of picks"
+                        )
 
 if __name__ == "__main__":
     main()

@@ -1,295 +1,408 @@
 """
 quandao_project/data/factor_engine.py
-========================================
-Vectorized alpha factor library for Nifty 50 position / swing trading.
+=======================================
+Pure-function factor computation engine for the Quandao multi-factor model.
 
-Design Contract
----------------
-* Pure transformations: DataFrame (daily OHLCV) -> pd.Series / pd.DataFrame.
-* No DB calls, no API calls, no file I/O.
-* NaN-safe: all rolling operations use min_periods to avoid silently dropping rows.
-* @njit used only for heavy element-wise loops that cannot be expressed with
-  Pandas rolling API (e.g. Amihud, where per-element conditional logic matters).
+WHAT THIS MODULE DOES:
+    Computes 6 quantitative alpha factors on OHLCV DataFrames.
+    Each factor is documented with its academic source and economic intuition.
 
-Factor Catalogue
-----------------
-ORIGINAL (from research phase)
-  compute_amihud            -- Amihud Illiquidity Ratio (21-day)
-  compute_momentum          -- 12-1 Month Cross-Sectional Momentum
-  compute_low_volatility    -- Quarterly Low-Vol (63-day std, sign-flipped)
+DESIGN PRINCIPLE:
+    Each function: DataFrame in → DataFrame out (with new column added).
+    Pure functions — no side effects, no database calls, no global state.
+    compute_all_price_factors() runs all 6 in sequence — one-stop call.
 
-MEDIUM-TERM ALPHA EXPANSION (swing / position, 30d – 6m horizon)
-  compute_intermediate_momentum          -- 6-Minus-1 Month Momentum (126d skip-21)
-  compute_quarterly_low_volatility       -- Quarterly Low-Vol Anomaly (63-day std, –1x)
-  compute_sharpe_adjusted_trend          -- Sharpe-Adjusted 90-Day Trend Strength
-  compute_sma100_pullback                -- % Distance from 100-Day SMA
-  compute_vpt_accumulation               -- 63-Day Institutional Volume-Price Trend
+FACTOR OVERVIEW:
+    1. factor_sharpe_trend      — Volatility-adjusted 90-day momentum
+    2. factor_intermediate_mom  — 6-minus-1 month momentum (skip most recent)
+    3. factor_amihud            — Amihud illiquidity (inverted → liquidity score)
+    4. factor_quarterly_lowvol  — 63-day realized volatility (low-vol anomaly)
+    5. factor_sma100_pullback   — Distance from SMA-100 (mean-reversion entry)
+    6. factor_vpt_accumulation  — Volume-Price Trend (institutional accumulation)
+
+INTERVIEW ANCHORS:
+    "Why skip the last month in momentum?" → Short-term reversal effect (Lo & MacKinlay)
+    "Why is Amihud inverted?" → Less liquid stocks score higher on illiquidity → lower score desired
+    "Why low-vol as a factor?" → Low-vol anomaly: low-beta stocks outperform CAPM prediction
+    "What is VPT?" → Direction-weighted volume accumulation: rising on high vol, falling on low vol
+
+USAGE:
+    from quandao_project.data.factor_engine import compute_all_price_factors
+    df_with_factors = compute_all_price_factors(df)
 """
-
-from __future__ import annotations
 
 import numpy as np
 import pandas as pd
-from numba import njit
 
 
-# ===========================================================================
-# Numba kernels (computationally heavy rolling loops)
-# ===========================================================================
+# ── Factor 1: Sharpe-Adjusted Trend ────────────────────────────────────────
 
-@njit
-def _calculate_amihud_illiquidity(returns: np.ndarray,
-                                   volumes: np.ndarray,
-                                   window: int) -> np.ndarray:
-    """Numba-accelerated Amihud ILLIQ = mean(|R| / DollarVolume) over window."""
-    n = len(returns)
-    out = np.full(n, np.nan)
-    for i in range(window, n):
-        vol_window = volumes[i - window:i]
-        ret_window = returns[i - window:i]
-        valid = vol_window > 0
-        if np.sum(valid) > 0:
-            illiq = np.abs(ret_window[valid]) / vol_window[valid]
-            out[i] = np.mean(illiq)
-    return out
-
-
-# ===========================================================================
-# Original Factors
-# ===========================================================================
-
-def compute_amihud(df: pd.DataFrame, window: int = 21) -> pd.Series:
+def factor_sharpe_trend(df: pd.DataFrame, window: int = 90) -> pd.DataFrame:
     """
-    Amihud Illiquidity Ratio.
+    Sharpe-Adjusted Trend (Volatility-Weighted Momentum).
 
-    ILLIQ_t = (1/D) * Σ |R_d| / DollarVolume_d
+    FORMULA:
+        factor = rolling_mean(daily_return, window) / rolling_std(daily_return, window)
+        (This is essentially a rolling Sharpe ratio without the risk-free adjustment.)
+
+    ECONOMIC INTUITION:
+        A stock that trends up with LOW volatility scores higher than one that
+        trends up with HIGH volatility. This captures QUALITY of momentum,
+        not just raw return. Preferred over raw momentum for mean-variance portfolios.
+
+    ACADEMIC REFERENCE:
+        Inspired by the "Sharpe Momentum" literature. Related to Asness et al. (2013).
 
     Parameters
     ----------
-    df     : Daily OHLCV DataFrame with 'close' and 'volume' columns.
-    window : Rolling window in trading days (default 21 ~ 1 month).
+    df     : pd.DataFrame - OHLCV data with 'close' column
+    window : int          - Rolling window in trading days (default 90 ≈ 4 months)
 
     Returns
     -------
-    pd.Series named 'amihud_illiq'. Higher values = more illiquid.
+    pd.DataFrame with new column 'factor_sharpe_trend'
     """
-    if "close" not in df.columns or "volume" not in df.columns:
-        raise ValueError("DataFrame must contain 'close' and 'volume' columns.")
+    df = df.copy()
+    daily_ret = df['close'].pct_change()
 
-    returns = df["close"].pct_change().fillna(0.0).values
-    dollar_volume = (df["close"] * df["volume"]).fillna(0.0).values
+    roll_mean = daily_ret.rolling(window=window, min_periods=max(20, window // 3)).mean()
+    roll_std  = daily_ret.rolling(window=window, min_periods=max(20, window // 3)).std(ddof=1)
 
-    illiq = _calculate_amihud_illiquidity(returns, dollar_volume, window)
-    # Scale by 1e12 to make the raw ratio human-readable (e.g., 0.5148 instead of 0.0000)
-    return pd.Series(illiq * 1e12, index=df.index, name="amihud_illiq")
+    # Avoid division by zero on flat periods
+    df['factor_sharpe_trend'] = np.where(roll_std > 1e-8, roll_mean / roll_std, np.nan)
+    return df
 
 
-def compute_momentum(df: pd.DataFrame,
-                     lookback: int = 252,
-                     skip: int = 21) -> pd.Series:
+# ── Factor 2: Intermediate Momentum ────────────────────────────────────────
+
+def factor_intermediate_momentum(df: pd.DataFrame,
+                                   formation_months: int = 6,
+                                   skip_months: int = 1) -> pd.DataFrame:
     """
-    12-Minus-1 Month Cross-Sectional Momentum.
+    Intermediate Momentum (6-minus-1 Month Price Return).
 
-    Skips the most recent *skip* days to avoid short-term reversal contamination.
+    FORMULA:
+        factor = (close[t - skip_days] / close[t - formation_days]) - 1
+
+        formation_days = formation_months * 21  (≈ trading days per month)
+        skip_days      = skip_months * 21
+
+    WHY SKIP THE LAST MONTH:
+        Jegadeesh & Titman (1993) found that 1-month return has REVERSAL properties:
+        stocks that went up last month tend to underperform next month.
+        By skipping the last month, we isolate the medium-term momentum signal
+        and avoid loading on the contaminating short-term reversal.
+
+    ACADEMIC REFERENCE:
+        Jegadeesh & Titman (1993), "Returns to Buying Winners and Selling Losers."
+        JF 48(1): 65-91. One of the most replicated findings in finance.
 
     Parameters
     ----------
-    df       : Daily OHLCV DataFrame with 'close' column.
-    lookback : Total lookback in trading days (default 252 ~ 12 months).
-    skip     : Recent days excluded from the return window (default 21 ~ 1 month).
+    df               : pd.DataFrame - OHLCV with 'close' column
+    formation_months : int          - Lookback period (default 6 months)
+    skip_months      : int          - Recent months to skip (default 1)
 
     Returns
     -------
-    pd.Series named 'momentum_12_1'.
+    pd.DataFrame with new column 'factor_intermediate_mom'
     """
-    if "close" not in df.columns:
-        raise ValueError("DataFrame must contain 'close' column.")
+    df = df.copy()
 
-    shifted_close = df["close"].shift(skip)
-    mom = shifted_close / df["close"].shift(lookback) - 1.0
-    return pd.Series(mom, index=df.index, name="momentum_12_1")
+    formation_days = formation_months * 21
+    skip_days      = skip_months * 21
+
+    # Return from formation_days ago to skip_days ago (not to today)
+    close_formation = df['close'].shift(formation_days)
+    close_skip      = df['close'].shift(skip_days)
+
+    df['factor_intermediate_mom'] = (close_skip / close_formation) - 1.0
+    return df
 
 
-def compute_low_volatility(df: pd.DataFrame, window: int = 63) -> pd.Series:
+# ── Factor 3: Amihud Illiquidity → Liquidity Factor ────────────────────────
+
+def factor_amihud_liquidity(df: pd.DataFrame, window: int = 21) -> pd.DataFrame:
     """
-    Rolling Low-Volatility Factor (63-day std, sign-flipped).
+    Amihud Illiquidity Ratio — transformed to a Liquidity SCORE.
 
-    A higher score means lower realised volatility (desirable for low-vol premium).
+    AMIHUD ILLIQUIDITY FORMULA:
+        ILLIQ_t = |daily_return_t| / (Volume_t * Price_t)
+        Average over window: ILLIQ = mean(ILLIQ_t, window)
+
+    TRANSFORMATION:
+        factor_amihud = -ILLIQ   (negated so HIGHER = MORE LIQUID = BETTER)
+        Then cross-sectionally z-scored in the screener.
+
+    ECONOMIC INTUITION:
+        Amihud's ratio measures "price impact per rupee of trading volume."
+        A stock that moves 1% on ₹10 crore volume is LESS liquid than one
+        that moves 1% on ₹1000 crore volume.
+        Less liquid stocks carry higher execution risk → we prefer liquid stocks.
+
+    ACADEMIC REFERENCE:
+        Amihud (2002), "Illiquidity and Stock Returns: Cross-Section and Time-Series Effects."
+        Journal of Financial Markets 5(1): 31-56.
 
     Parameters
     ----------
-    df     : Daily OHLCV DataFrame with 'close' column.
-    window : Rolling window in trading days (default 63 ~ 1 quarter).
+    df     : pd.DataFrame - OHLCV data with 'close' and 'volume' columns
+    window : int          - Rolling window for illiquidity smoothing (default 21 days ≈ 1 month)
 
     Returns
     -------
-    pd.Series named 'low_volatility'.
+    pd.DataFrame with new column 'factor_amihud' (negative illiquidity = positive liquidity)
     """
-    if "close" not in df.columns:
-        raise ValueError("DataFrame must contain 'close' column.")
+    df = df.copy()
 
-    returns = df["close"].pct_change()
-    vol = -returns.rolling(window=window, min_periods=window // 2).std()
-    return pd.Series(vol, index=df.index, name="low_volatility")
+    daily_ret = df['close'].pct_change().abs()
+    turnover  = df['volume'] * df['close']  # ₹ turnover (volume × price)
+
+    # Illiquidity: |return| / ₹turnover. Add epsilon to avoid division by zero.
+    illiq = daily_ret / (turnover + 1e-10)
+
+    # Rolling mean illiquidity
+    rolling_illiq = illiq.rolling(window=window, min_periods=max(5, window // 3)).mean()
+
+    # INVERT: higher (less negative) = more liquid = better score
+    df['factor_amihud'] = -rolling_illiq
+    return df
 
 
-# ===========================================================================
-# Medium-Term Alpha Factors (swing / position, 30d – 6m horizon)
-# ===========================================================================
+# ── Factor 4: Quarterly Low Volatility ─────────────────────────────────────
 
-
-
-
-def compute_quarterly_low_volatility(df: pd.DataFrame,
-                                      window: int = 63) -> pd.Series:
+def factor_quarterly_low_volatility(df: pd.DataFrame, window: int = 63) -> pd.DataFrame:
     """
-    Quarterly Low-Volatility Anomaly Factor.
+    Quarterly Low Volatility Factor (63-day Realized Volatility, inverted).
 
-    The Nifty Low Volatility 50 index historically outperforms the broad market
-    due to investor preference for lottery-like payoffs and institutional
-    benchmark constraints that force under-allocation to low-risk names.
+    FORMULA:
+        realized_vol = std(daily_returns, window=63)
+        factor = -realized_vol   (lower vol → higher score)
 
-    Logic
-    -----
-    vol   = rolling std of daily returns over *window* days
-    score = -vol          (sign-flip: higher score == structurally lower vol)
+    THE LOW-VOLATILITY ANOMALY:
+        CAPM predicts: higher beta (risk) → higher return.
+        REALITY: Low-volatility stocks OUTPERFORM high-volatility stocks on a
+        risk-adjusted basis. This is one of the most documented anomalies.
+
+        WHY?: Institutional constraints (benchmark hugging), leverage aversion,
+        and lottery-ticket preference cause overcrowding of volatile stocks.
+
+    ACADEMIC REFERENCE:
+        Baker, Bradley & Wurgler (2011), "Benchmarks as Limits to Arbitrage."
+        Blitz & Van Vliet (2007), "The Volatility Effect."
 
     Parameters
     ----------
-    df     : Daily OHLCV DataFrame with 'close' column.
-    window : Rolling window in trading days (default 63 ~ 1 quarter).
+    df     : pd.DataFrame - OHLCV data with 'close' column
+    window : int          - Rolling window (63 days ≈ 1 quarter)
 
     Returns
     -------
-    pd.Series named 'quarterly_low_vol'.
-    NaN returned for initial rows where window is incomplete (min_periods = window//2).
+    pd.DataFrame with 'factor_quarterly_lowvol' (negative vol = positive factor score)
     """
-    if "close" not in df.columns:
-        raise ValueError("DataFrame must contain 'close' column.")
+    df = df.copy()
 
-    daily_returns = df["close"].pct_change()
-    raw_vol = daily_returns.rolling(window=window, min_periods=window // 2).std()
-    factor = -raw_vol
-    return pd.Series(factor, index=df.index, name="quarterly_low_vol")
+    daily_ret = df['close'].pct_change()
+    realized_vol = daily_ret.rolling(window=window, min_periods=max(10, window // 3)).std(ddof=1)
 
-
-
+    # INVERT: lower volatility → higher score
+    df['factor_quarterly_lowvol'] = -realized_vol
+    return df
 
 
-def compute_sma100_pullback(df: pd.DataFrame, window: int = 100) -> pd.Series:
+# ── Factor 5: SMA-100 Pullback Distance ────────────────────────────────────
+
+def factor_sma100_pullback(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Medium-Term Moving Average Pullback (% Distance from 100-Day SMA).
+    SMA-100 Pullback Distance Factor.
 
-    Measures how extended or compressed the price is relative to its
-    intermediate trend anchor.  In a secular bull market, stocks that are
-    moderately above their 100-SMA (but not over-extended) offer superior
-    risk-adjusted entry points.
+    FORMULA:
+        sma_100 = rolling_mean(close, 100)
+        factor  = (close - sma_100) / sma_100   [dimensionless % distance]
 
-    Logic
-    -----
-    sma_100 = rolling mean of close over *window* days
-    score   = (close - sma_100) / sma_100
+    INTERPRETATION:
+        Positive values → stock is above its 100-day average (trending up).
+        Values close to 0 → stock has pulled back to its trend line.
+        Large positive values → possibly overbought (use with RSI filter).
 
-    Interpretation
-    --------------
-    +0.05  → close is 5% above the 100-SMA  (extended; crowded long)
-    -0.03  → close is 3% below the 100-SMA  (pullback; potential entry)
-     0.00  → close is exactly at the 100-SMA
+    ECONOMIC INTUITION:
+        Stocks that are close to (but above) SMA-100 present better entry points
+        than those far above. This factor acts as a MEAN-REVERSION TIMING signal
+        within an uptrend — buy the dip without fighting the trend.
+
+    USAGE IN SCREENER:
+        The screener's Stage 3 filter flags stocks with pullback between 0% and 5%
+        as "Optimal Support Entry" (the ideal buy zone).
+
+    Returns
+    -------
+    pd.DataFrame with 'factor_sma100_pullback'
+    """
+    df = df.copy()
+    sma_100 = df['close'].rolling(window=100, min_periods=50).mean()
+    df['factor_sma100_pullback'] = (df['close'] - sma_100) / (sma_100 + 1e-8)
+    return df
+
+
+# ── Factor 6: VPT Volume-Price Trend Accumulation ──────────────────────────
+
+def factor_vpt_accumulation(df: pd.DataFrame, window: int = 63) -> pd.DataFrame:
+    """
+    VPT (Volume-Price Trend) Institutional Accumulation Factor.
+
+    FORMULA:
+        VPT_t = VPT_{t-1} + Volume_t × (Close_t - Close_{t-1}) / Close_{t-1}
+
+        Simplified: VPT_t = cumsum(Volume × daily_return)
+
+    VPT vs OBV:
+        OBV (On-Balance Volume): add FULL volume on up-days, subtract on down-days.
+        VPT: weight volume by the MAGNITUDE of the price change.
+        VPT is more nuanced — a 5% up day gets 5x the VPT of a 1% up day.
+
+    WHAT VPT DETECTS:
+        Rising VPT = institutional accumulation: big money is buying on up-days.
+        Falling VPT = distribution: institutions selling into price strength.
+        VPT divergence (price rises but VPT falls) is a classic bearish warning.
+
+    ACADEMIC REFERENCE:
+        Related to Granville's OBV (1963). VPT variant by Buff Dormeier.
 
     Parameters
     ----------
-    df     : Daily OHLCV DataFrame with 'close' column.
-    window : SMA period in trading days (default 100).
+    df     : pd.DataFrame - OHLCV data with 'close' and 'volume' columns
+    window : int          - Rolling window to z-score VPT (default 63 days)
 
     Returns
     -------
-    pd.Series named 'sma100_pullback'.
-    NaN returned for initial rows (min_periods = window // 2).
+    pd.DataFrame with 'factor_vpt_accumulation'
     """
-    if "close" not in df.columns:
-        raise ValueError("DataFrame must contain 'close' column.")
+    df = df.copy()
 
-    sma = df["close"].rolling(window=window, min_periods=window // 2).mean()
-    factor = (df["close"] - sma) / sma
-    return pd.Series(factor, index=df.index, name="sma100_pullback")
+    daily_ret = df['close'].pct_change().fillna(0)
+    vpt_daily = df['volume'] * daily_ret
+
+    # Cumulative VPT from start
+    vpt_cumsum = vpt_daily.cumsum()
+
+    # Use rolling 63-day change in VPT to measure RECENT accumulation pace
+    df['factor_vpt_accumulation'] = vpt_cumsum.diff(window)
+    return df
 
 
-def compute_vpt_accumulation(df: pd.DataFrame,
-                              roll_window: int = 63) -> pd.Series:
+# ── Factor 7: EMA-21 Proximity ──────────────────────────────────────────────
+
+def factor_ema_proximity(df: pd.DataFrame, span: int = 21) -> pd.DataFrame:
     """
-    63-Day Institutional Accumulation via Volume-Price Trend (VPT).
+    EMA-21 Proximity Factor — distance of close from the 21-day EMA.
 
-    Tracks net smart-money flow by weighting each day's volume by its
-    directional price contribution.  The 63-day rolling sum captures a full
-    quarter of accumulation / distribution pressure, filtering out intraday
-    noise that distorts shorter-term flow measures.
+    FORMULA:
+        ema_21 = EWM(close, span=21)
+        factor = (close - ema_21) / ema_21   [dimensionless % distance]
 
-    Logic
-    -----
-    daily_vpt      = volume * (close - prev_close) / prev_close
-    quarterly_vpt  = rolling sum of daily_vpt over *roll_window* days
+    SWING TRADING INTERPRETATION:
+        Positive values → stock is above EMA-21 (uptrend).
+        Values near 0   → ideal pullback entry zone on the EMA.
+        Large positive  → extended from EMA, higher reversion risk.
+        Negative values → price has dipped below EMA-21 (caution).
+
+    ECONOMIC INTUITION:
+        EMA-21 is the short-term institutional "cost basis" reference.
+        Entries within 0–3% above EMA-21 provide tight stops and
+        high-probability mean-reversion trades in trending stocks.
 
     Parameters
     ----------
-    df          : Daily OHLCV DataFrame with 'close' and 'volume' columns.
-    roll_window : Accumulation window in trading days (default 63 ~ 1 quarter).
+    df   : pd.DataFrame - OHLCV data with 'close' column
+    span : int          - EMA span (default 21 days)
 
     Returns
     -------
-    pd.Series named 'vpt_accumulation'.
-    NaN returned for the first row (prev_close undefined) and initial window rows
-    (min_periods = roll_window // 2).
-
-    Notes
-    -----
-    * Factor values are in native share-volume units and are not normalised.
-      For cross-sectional ranking, z-score or rank-normalise before combining
-      with other factors.
-    * Positive value: net buying pressure over the quarter.
-    * Negative value: net selling / distribution pressure over the quarter.
+    pd.DataFrame with new column 'factor_ema_proximity'
     """
-    if "close" not in df.columns or "volume" not in df.columns:
-        raise ValueError("DataFrame must contain 'close' and 'volume' columns.")
-
-    prev_close = df["close"].shift(1)
-    daily_vpt = df["volume"] * (df["close"] - prev_close) / prev_close
-    factor = daily_vpt.rolling(window=roll_window, min_periods=roll_window // 2).sum()
-    return pd.Series(factor, index=df.index, name="vpt_accumulation")
+    df = df.copy()
+    ema = df['close'].ewm(span=span, adjust=False).mean()
+    df['factor_ema_proximity'] = (df['close'] - ema) / (ema + 1e-8)
+    return df
 
 
-# ===========================================================================
-# Composite Aggregator
-# ===========================================================================
+# ── Factor 8: Volume Surge ───────────────────────────────────────────────────
+
+def factor_volume_surge(df: pd.DataFrame, window: int = 20) -> pd.DataFrame:
+    """
+    Volume Surge Factor — ratio of current volume to 20-day Volume Moving Average.
+
+    FORMULA:
+        VMA_20 = rolling_mean(volume, window=20)
+        factor = volume / VMA_20
+
+    INTERPRETATION:
+        factor = 1.0  → average volume day (baseline)
+        factor > 1.5  → elevated volume: institutional participation likely
+        factor > 2.0  → high conviction breakout or reversal bar
+        factor < 0.7  → low-volume drift: unreliable price action
+
+    WHY VOLUME CONFIRMS SIGNALS:
+        Price moves on above-average volume carry more weight because they
+        represent genuine supply/demand imbalance — not just algorithmic
+        noise or thin-market drift. A bullish engulfing on 2× volume is
+        qualitatively different from one on 0.5× volume.
+
+    USAGE IN SCREENER:
+        Used as both a factor in the composite score AND a binary gate
+        (vol_confirmed = factor_volume_surge > 1.0 on the signal bar).
+
+    Parameters
+    ----------
+    df     : pd.DataFrame - OHLCV data with 'volume' column
+    window : int          - Rolling window for VMA (default 20 days)
+
+    Returns
+    -------
+    pd.DataFrame with new column 'factor_volume_surge'
+    """
+    df = df.copy()
+    vma = df['volume'].rolling(window=window, min_periods=max(5, window // 3)).mean()
+    df['factor_volume_surge'] = df['volume'] / (vma + 1e-8)
+    return df
+
+
+# ── Master Factor Computation ────────────────────────────────────────────────
 
 def compute_all_price_factors(df: pd.DataFrame) -> pd.DataFrame:
     """
-    Run all price/volume factors and attach them to a copy of *df*.
+    Run all 8 alpha factors in sequence on a single OHLCV DataFrame.
 
-    Columns added
-    -------------
-    factor_amihud               -- Amihud liquidity score (sign-flipped: higher = more liquid)
-    factor_momentum             -- 12-1 month cross-sectional momentum
-    factor_quarterly_lowvol     -- 63-day quarterly low-vol anomaly (sign-flipped)
-    factor_sma100_pullback      -- % distance from 100-day SMA
-    factor_vpt_accumulation     -- 63-day VPT institutional accumulation
+    This is the one-stop function called by the screener and dashboard.
+    Each factor adds one column to the DataFrame.
+
+    INPUT columns required:  time, open, high, low, close, volume
+    OUTPUT columns added:    factor_sharpe_trend, factor_intermediate_mom,
+                             factor_amihud, factor_quarterly_lowvol,
+                             factor_sma100_pullback, factor_vpt_accumulation,
+                             factor_ema_proximity, factor_volume_surge
 
     Parameters
     ----------
-    df : Daily OHLCV DataFrame (must contain at minimum 'close' and 'volume').
+    df : pd.DataFrame - Clean OHLCV data (sorted by time, no NaN in OHLCV columns)
 
     Returns
     -------
-    pd.DataFrame — a copy of *df* with all factor columns appended.
+    pd.DataFrame with original columns + 8 new factor columns.
     """
-    out = df.copy()
+    if df is None or df.empty:
+        return df
 
-    # --- Original factors ---
-    out["factor_amihud"] = -compute_amihud(df)          # sign-flip: higher = more liquid
-    out["factor_momentum"] = compute_momentum(df)
+    df = df.copy()
 
-    # --- Medium-term alpha expansion ---
-    out["factor_quarterly_lowvol"] = compute_quarterly_low_volatility(df)
-    out["factor_sma100_pullback"] = compute_sma100_pullback(df)
-    out["factor_vpt_accumulation"] = compute_vpt_accumulation(df)
+    # Run all factors in order (each is pure, no conflicts)
+    df = factor_sharpe_trend(df)
+    df = factor_intermediate_momentum(df)
+    df = factor_amihud_liquidity(df)
+    df = factor_quarterly_low_volatility(df)
+    df = factor_sma100_pullback(df)
+    df = factor_vpt_accumulation(df)
+    df = factor_ema_proximity(df)
+    df = factor_volume_surge(df)
 
-    return out
+    return df

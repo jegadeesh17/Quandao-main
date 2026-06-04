@@ -1,399 +1,231 @@
 """
 quandao_project/data/database.py
 ==================================
-The ONLY module in the project that is allowed to issue SQL statements.
+Unified database access layer for Quandao.
 
-Responsibilities
-----------------
-* Open connections (psycopg2 + SQLAlchemy)
-* Create / migrate schema
-* Write: upsert_candles, helpers
-* Read: all load_ohlcv_* variants (daily, weekly, monthly, yearly,
-        intraday N-min, and raw-1m for Forex ORB strategies)
+WHY THIS MODULE EXISTS:
+    The research dashboard imports from quandao_project.data.database.
+    This module provides a clean, single-function interface over the existing
+    multi-resolution load.py logic — one function to rule them all.
 
-The rest of the codebase calls these functions exclusively.
-No SQL should appear anywhere else.
+DESIGN:
+    - get_connection()  → raw psycopg2 connection (for direct SQL)
+    - get_engine()      → SQLAlchemy engine (for pandas read_sql)
+    - load_ohlcv()      → unified candle loader (wraps load.py routing)
+    - load_fundamentals() → PE, D/E, sector from market_fundamentals table
+                            Returns empty DataFrame gracefully if table missing.
+
+USAGE:
+    from quandao_project.data.database import load_ohlcv, get_connection
+
+    df = load_ohlcv("NSE:NIFTY50-INDEX", resolution="D",
+                    from_date="2023-01-01", to_date="2024-01-01")
 """
 
-from __future__ import annotations
+import os
+import sys
+from pathlib import Path
+from datetime import datetime, timedelta, timezone
 
 import pandas as pd
 import psycopg2
-from psycopg2.extras import execute_values
+from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
 
-from quandao_project.config import Settings
+# ── Project Root & .env Setup ───────────────────────────────────────────────
+# Walk up from this file: database.py → data/ → quandao_project/ → Quandao-main/
+_PROJECT_ROOT = Path(__file__).resolve().parents[2]
+load_dotenv(_PROJECT_ROOT / ".env")
+
+# Support both DATABASE_URL (full URL) and individual components
+_DATABASE_URL = os.getenv("DATABASE_URL") or (
+    "postgresql://{user}:{password}@{host}:{port}/{name}".format(
+        user=os.getenv("DB_USER", "postgres"),
+        password=os.getenv("DB_PASSWORD", ""),
+        host=os.getenv("DB_HOST", "127.0.0.1"),
+        port=os.getenv("DB_PORT", "5432"),
+        name=os.getenv("DB_NAME", "quandao"),
+    )
+)
 
 
-# ===========================================================================
-# Connections
-# ===========================================================================
+# ── Connection Factories ────────────────────────────────────────────────────
 
-def get_connection():
-    """Return a raw psycopg2 connection (used by write operations)."""
-    return psycopg2.connect(Settings.DATABASE_URL)
+def get_connection() -> psycopg2.extensions.connection:
+    """
+    Return a raw psycopg2 connection to the Quandao PostgreSQL database.
+
+    Use for: direct SQL queries, cursor-based inserts, DDL operations.
+    Remember to call conn.close() when done.
+
+    Returns
+    -------
+    psycopg2.connection
+    """
+    return psycopg2.connect(_DATABASE_URL)
 
 
 def get_engine():
-    """Return a SQLAlchemy engine (used by read/pd.read_sql operations)."""
-    return create_engine(Settings.DATABASE_URL)
-
-
-# ===========================================================================
-# Schema
-# ===========================================================================
-
-_CREATE_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS market_candles (
-    time        TIMESTAMPTZ      NOT NULL,
-    symbol      TEXT             NOT NULL,
-    resolution  TEXT             NOT NULL,
-    open        DOUBLE PRECISION,
-    high        DOUBLE PRECISION,
-    low         DOUBLE PRECISION,
-    close       DOUBLE PRECISION,
-    volume      DOUBLE PRECISION,
-    PRIMARY KEY (symbol, time, resolution)
-);
-"""
-
-_CREATE_EXTENSION_SQL = "CREATE EXTENSION IF NOT EXISTS timescaledb;"
-_CREATE_HYPERTABLE_SQL = (
-    "SELECT create_hypertable('market_candles', 'time', if_not_exists => TRUE);"
-)
-
-_CREATE_FACTOR_TABLE_SQL = """
-CREATE TABLE IF NOT EXISTS market_factors (
-    time            TIMESTAMPTZ      NOT NULL,
-    symbol          TEXT             NOT NULL,
-    factor_momentum DOUBLE PRECISION,
-    factor_lowvol   DOUBLE PRECISION,
-    factor_amihud   DOUBLE PRECISION,
-    PRIMARY KEY (symbol, time)
-);
-"""
-_CREATE_FACTOR_HYPERTABLE_SQL = (
-    "SELECT create_hypertable('market_factors', 'time', if_not_exists => TRUE);"
-)
-
-
-def ensure_schema(conn) -> None:
-    """Create market_candles/market_factors tables + TimescaleDB hypertables if absent."""
-    with conn.cursor() as cur:
-        cur.execute(_CREATE_TABLE_SQL)
-        cur.execute(_CREATE_FACTOR_TABLE_SQL)
-        for stmt in (_CREATE_EXTENSION_SQL, _CREATE_HYPERTABLE_SQL, _CREATE_FACTOR_HYPERTABLE_SQL):
-            try:
-                cur.execute(stmt)
-            except Exception:
-                conn.rollback()
-    conn.commit()
-
-
-# ===========================================================================
-# Write helpers
-# ===========================================================================
-
-_UPSERT_SQL = """
-INSERT INTO market_candles (time, symbol, resolution, open, high, low, close, volume)
-VALUES %s
-ON CONFLICT (symbol, time, resolution)
-DO UPDATE SET
-    open   = EXCLUDED.open,
-    high   = EXCLUDED.high,
-    low    = EXCLUDED.low,
-    close  = EXCLUDED.close,
-    volume = EXCLUDED.volume;
-"""
-
-
-def upsert_candles(conn, rows: list[tuple], page_size: int = 1000) -> None:
     """
-    Bulk-upsert deduplicated OHLCV rows into market_candles.
+    Return a SQLAlchemy engine for pandas read_sql() operations.
 
-    Parameters
-    ----------
-    conn      : psycopg2 connection
-    rows      : list of (time, symbol, resolution, open, high, low, close, volume)
-    page_size : execute_values batch size (use 5000 for MT5 bulk loads)
-    """
-    if not rows:
-        return
-
-    seen: set = set()
-    unique: list[tuple] = []
-    for r in rows:
-        key = (r[0], r[1], r[2])
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-
-    with conn.cursor() as cur:
-        execute_values(cur, _UPSERT_SQL, unique, page_size=page_size)
-    conn.commit()
-
-
-def get_latest_timestamp(conn, symbol: str, resolution: str):
-    """Return the most recent stored datetime for (symbol, resolution), or None."""
-    sql = """
-    SELECT max(time) FROM market_candles
-    WHERE symbol = %s AND resolution = %s;
-    """
-    with conn.cursor() as cur:
-        cur.execute(sql, (symbol, resolution))
-        res = cur.fetchone()
-        if res and res[0]:
-            return res[0]
-    return None
-
-
-def get_distinct_pairs(conn) -> list[tuple[str, str]]:
-    """Return all (symbol, resolution) pairs currently in the database."""
-    sql = "SELECT DISTINCT symbol, resolution FROM market_candles;"
-    with conn.cursor() as cur:
-        cur.execute(sql)
-        return cur.fetchall()
-
-_UPSERT_FACTORS_SQL = """
-INSERT INTO market_factors (time, symbol, factor_momentum, factor_lowvol, factor_amihud)
-VALUES %s
-ON CONFLICT (symbol, time)
-DO UPDATE SET
-    factor_momentum = EXCLUDED.factor_momentum,
-    factor_lowvol   = EXCLUDED.factor_lowvol,
-    factor_amihud   = EXCLUDED.factor_amihud;
-"""
-
-def upsert_factors(conn, rows: list[tuple], page_size: int = 1000) -> None:
-    """
-    Bulk-upsert deduplicated factor rows into market_factors.
-
-    Parameters
-    ----------
-    conn      : psycopg2 connection
-    rows      : list of (time, symbol, factor_momentum, factor_lowvol, factor_amihud)
-    """
-    if not rows:
-        return
-
-    seen: set = set()
-    unique: list[tuple] = []
-    for r in rows:
-        key = (r[0], r[1])
-        if key not in seen:
-            seen.add(key)
-            unique.append(r)
-
-    with conn.cursor() as cur:
-        execute_values(cur, _UPSERT_FACTORS_SQL, unique, page_size=page_size)
-    conn.commit()
-
-
-# ===========================================================================
-# Read helpers  (previously in backend/data/load.py)
-# ===========================================================================
-# All functions return a DataFrame sorted ascending by `time`.
-# The caller never writes SQL — they call these functions.
-
-def load_ohlcv_day(symbol: str, from_date: str, to_date: str) -> pd.DataFrame:
-    """Load daily OHLCV bars for *symbol* in [from_date, to_date)."""
-    engine = get_engine()
-    sql = text("""
-        SELECT time, open, high, low, close, volume
-        FROM   market_candles
-        WHERE  symbol     = :symbol
-        AND    resolution = 'D'
-        AND    time      >= :from_date
-        AND    time      <  :to_date
-        ORDER  BY time
-    """)
-    df = pd.read_sql(sql, engine, params={"symbol": symbol,
-                                           "from_date": from_date,
-                                           "to_date": to_date})
-    return df.sort_values("time").reset_index(drop=True)
-
-
-def load_ohlcv_week(symbol: str, from_date: str, to_date: str) -> pd.DataFrame:
-    """Load weekly OHLCV bars for *symbol*."""
-    df = load_ohlcv_day(symbol, from_date, to_date)
-    if df.empty:
-        return df
-    df.set_index("time", inplace=True)
-    df = df.resample("W-MON").agg({
-        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-    }).dropna().reset_index()
-    return df
-
-
-def load_ohlcv_month(symbol: str, from_date: str, to_date: str) -> pd.DataFrame:
-    """Load monthly OHLCV bars for *symbol*."""
-    df = load_ohlcv_day(symbol, from_date, to_date)
-    if df.empty:
-        return df
-    df.set_index("time", inplace=True)
-    df = df.resample("ME").agg({
-        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-    }).dropna().reset_index()
-    return df
-
-
-def load_ohlcv_year(symbol: str, from_date: str, to_date: str) -> pd.DataFrame:
-    """Load yearly OHLCV bars for *symbol*."""
-    df = load_ohlcv_day(symbol, from_date, to_date)
-    if df.empty:
-        return df
-    df.set_index("time", inplace=True)
-    df = df.resample("YE").agg({
-        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-    }).dropna().reset_index()
-    return df
-
-
-def load_ohlcv_nmin(
-    symbol: str,
-    resolution: str,
-    from_date: str,
-    to_date: str,
-    session_start: str = "09:15",
-    session_end: str = "15:30",
-) -> pd.DataFrame:
-    """
-    Load N-minute OHLCV bars for *symbol* (Indian intraday).
-    """
-    engine = get_engine()
-    sql = text("""
-        SELECT time, open, high, low, close, volume
-        FROM   market_candles
-        WHERE  symbol     = :symbol
-        AND    resolution = '1'
-        AND    time      >= :from_date
-        AND    time      <  :to_date
-        AND    time      >= time::date + :session_start ::time
-        AND    time      <= time::date + :session_end   ::time
-        ORDER  BY time
-    """)
-    df = pd.read_sql(sql, engine, params={
-        "symbol":       symbol,
-        "from_date":    from_date,
-        "to_date":      to_date,
-        "session_start": session_start,
-        "session_end":   session_end,
-    })
-    
-    if df.empty:
-        return df
-        
-    df["time"] = pd.to_datetime(df["time"]).dt.tz_convert("Asia/Kolkata")
-    df.set_index("time", inplace=True)
-    
-    freq = resolution.replace(" minutes", "min")
-    df = df.resample(freq).agg({
-        "open": "first", "high": "max", "low": "min", "close": "last", "volume": "sum"
-    }).dropna().reset_index()
-    return df
-
-
-def load_ohlcv(
-    symbol: str,
-    resolution: str,
-    from_date: str,
-    to_date: str,
-) -> pd.DataFrame:
-    """
-    Unified OHLCV loader — dispatches to the correct underlying function.
-
-    Parameters
-    ----------
-    resolution : ``'D'``, ``'W'``, ``'M'``, ``'Y'``, or an integer string
-                 (``'1'``…``'240'``) for intraday minutes.
+    Use for: pd.read_sql(query, engine) — the idiomatic pandas DB pattern.
 
     Returns
     -------
-    pd.DataFrame or None if the resolution is unrecognised.
+    sqlalchemy.Engine
     """
-    if resolution == "D":
-        return load_ohlcv_day(symbol, from_date, to_date)
-    if resolution == "W":
-        return load_ohlcv_week(symbol, from_date, to_date)
-    if resolution == "M":
-        return load_ohlcv_month(symbol, from_date, to_date)
-    if resolution == "Y":
-        return load_ohlcv_year(symbol, from_date, to_date)
+    return create_engine(_DATABASE_URL)
+
+
+# ── Unified OHLCV Loader ────────────────────────────────────────────────────
+
+def load_ohlcv(symbol: str,
+               resolution: str,
+               from_date: str,
+               to_date: str) -> pd.DataFrame:
+    """
+    Unified OHLCV data loader — single function for all resolutions.
+
+    Delegates to the resolution-specific functions in quandao_project/data/load.py.
+    The dashboard and all strategy modules call THIS function — not load.py directly.
+
+    Supported Resolutions:
+        'D'  → Daily candles
+        'W'  → Weekly (aggregated from daily via TimescaleDB time_bucket)
+        'M'  → Monthly
+        'Y'  → Yearly
+        '1'–'240' → Intraday N-minute candles
+
+    Parameters
+    ----------
+    symbol     : str - Database symbol, e.g. "NSE:NIFTY50-INDEX", "NSE:RELIANCE-EQ"
+    resolution : str - Time resolution (see above)
+    from_date  : str - Start date/datetime. Accepts:
+                       "YYYY-MM-DD" or "YYYY-MM-DD HH:MM:SS+05:30"
+    to_date    : str - End date/datetime (exclusive upper bound in most queries)
+
+    Returns
+    -------
+    pd.DataFrame with columns: [time, open, high, low, close, volume]
+    Returns empty DataFrame if no data or connection fails.
+    """
+    # Normalize date strings: if only date given, append IST timestamp
+    from_date = _normalize_date_str(from_date, is_end=False)
+    to_date   = _normalize_date_str(to_date,   is_end=True)
+
     try:
-        res_int = int(resolution)
-        if 1 <= res_int <= 240:
-            return load_ohlcv_nmin(symbol, f"{res_int} minutes", from_date, to_date)
-    except ValueError:
-        pass
-    return pd.DataFrame()
+        # Import here to avoid circular imports at module load time
+        from quandao_project.data.load import load_ohlcv as _load_ohlcv
+        df = _load_ohlcv(symbol, resolution, from_date, to_date)
+        return df if df is not None else pd.DataFrame()
+
+    except Exception as e:
+        print(f"[database.load_ohlcv] Failed for {symbol} ({resolution}): {e}")
+        return pd.DataFrame()
 
 
-def load_ohlcv_forex(
-    symbol: str,
-    from_date: str,
-    to_date: str,
-    session_open_hour: int = 0,
-    session_close_hour: int = 24,
-) -> pd.DataFrame:
+def _normalize_date_str(date_str: str, is_end: bool = False) -> str:
     """
-    Load raw 1-minute Forex OHLCV from the database.
+    Normalize a date string to 'YYYY-MM-DD HH:MM:SS+05:30' format.
 
-    Forex data is stored in ``market_candles`` with ``resolution='1'`` by
-    the MT5 ingestion pipeline.  Strategies resample internally as needed.
+    Accepts: 'YYYY-MM-DD', 'YYYY-MM-DD HH:MM:SS', 'YYYY-MM-DD HH:MM:SS+05:30'
+    """
+    date_str = date_str.strip()
+
+    # Already has timezone info
+    if '+' in date_str or 'Z' in date_str:
+        return date_str
+
+    # Has time but no timezone
+    if ' ' in date_str and ':' in date_str:
+        return date_str + '+05:30'
+
+    # Date only — append start or end of day
+    if is_end:
+        return date_str + ' 23:59:59+05:30'
+    else:
+        return date_str + ' 00:00:00+05:30'
+
+
+# ── Fundamentals Loader ─────────────────────────────────────────────────────
+
+def load_fundamentals(conn, symbols: list) -> pd.DataFrame:
+    """
+    Load fundamental data (PE ratio, D/E ratio, sector) for a list of symbols.
+
+    Data source: 'market_fundamentals' table in PostgreSQL.
+    If the table doesn't exist or query fails, returns an empty DataFrame.
+    The dashboard handles the empty case gracefully via hardcoded fallbacks.
+
+    Table Schema (expected):
+        symbol TEXT, trailing_pe FLOAT, debt_to_equity FLOAT,
+        sector TEXT, updated_at TIMESTAMPTZ
 
     Parameters
     ----------
-    symbol             : e.g. ``"GBPUSD"``
-    from_date          : start timestamp with tz, e.g. ``"2020-01-01 00:00:00+00:00"``
-    to_date            : end   timestamp with tz
-    session_open_hour  : UTC hour filter – 0 means no filter
-    session_close_hour : UTC hour filter – 24 means no filter
+    conn    : psycopg2.connection - Active database connection
+    symbols : list of str         - List of NSE symbols
 
     Returns
     -------
-    pd.DataFrame – columns: time (UTC datetime), open, high, low, close, volume.
-    Empty DataFrame if no data found.
+    pd.DataFrame with columns: [symbol, trailing_pe, debt_to_equity, sector]
+    Empty DataFrame if table missing or query error.
     """
-    engine = get_engine()
-    sql = text("""
-        SELECT time, open, high, low, close, volume
-        FROM   market_candles
-        WHERE  symbol     = :symbol
-        AND    resolution = '1'
-        AND    time      >= :from_date
-        AND    time      <  :to_date
-        ORDER  BY time
-    """)
-    df = pd.read_sql(sql, engine, params={"symbol": symbol,
-                                           "from_date": from_date,
-                                           "to_date": to_date})
-    if df.empty:
+    if not symbols:
+        return pd.DataFrame()
+
+    try:
+        # Check if table exists
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables
+                    WHERE table_name = 'market_fundamentals'
+                );
+            """)
+            exists = cur.fetchone()[0]
+
+        if not exists:
+            return pd.DataFrame()
+
+        # Load fundamentals for requested symbols
+        placeholders = ','.join(['%s'] * len(symbols))
+        query = f"""
+            SELECT symbol, trailing_pe, debt_to_equity, sector
+            FROM   market_fundamentals
+            WHERE  symbol IN ({placeholders})
+        """
+        df = pd.read_sql(query, conn, params=symbols)
         return df
 
-    df["time"] = pd.to_datetime(df["time"], utc=True)
-    df = df.sort_values("time").reset_index(drop=True)
-
-    if session_open_hour > 0 or session_close_hour < 24:
-        hour = df["time"].dt.hour
-        df = df[
-            (hour >= session_open_hour) & (hour < session_close_hour)
-        ].reset_index(drop=True)
-
-    return df
+    except Exception as e:
+        print(f"[database.load_fundamentals] Query failed: {e}")
+        return pd.DataFrame()
 
 
-def load_factors(symbol: str, from_date: str, to_date: str) -> pd.DataFrame:
-    """Load factors for *symbol* in [from_date, to_date)."""
-    engine = get_engine()
-    sql = text("""
-        SELECT time, factor_momentum, factor_lowvol, factor_amihud
-        FROM   market_factors
-        WHERE  symbol = :symbol
-        AND    time  >= :from_date
-        AND    time  <  :to_date
-        ORDER  BY time
-    """)
-    df = pd.read_sql(sql, engine, params={"symbol": symbol,
-                                           "from_date": from_date,
-                                           "to_date": to_date})
-    return df.sort_values("time").reset_index(drop=True)
+# ── Utility: Latest Timestamp ────────────────────────────────────────────────
+
+def get_latest_timestamp(symbol: str, resolution: str):
+    """
+    Get the most recent candle timestamp in the database for a symbol/resolution.
+
+    Used by the data pipeline to determine where to start a catchup fetch.
+
+    Returns
+    -------
+    datetime or None
+    """
+    try:
+        conn = get_connection()
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT max(time) FROM market_candles
+                WHERE symbol = %s AND resolution = %s;
+            """, (symbol, resolution))
+            result = cur.fetchone()
+        conn.close()
+        return result[0] if result and result[0] else None
+    except Exception as e:
+        print(f"[database.get_latest_timestamp] Error: {e}")
+        return None

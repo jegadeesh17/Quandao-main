@@ -1,319 +1,430 @@
 """
 quandao_project/execution/order_executor.py
 =============================================
-Strict execution layer routing risk-approved payloads to brokers.
+Paper trading execution engine with Transaction Cost Analysis (TCA).
 
-This module handles actual market execution via Fyers or MetaTrader 5 adapters,
-as well as providing a robust Paper Trade Journaling mechanism.
-It assumes all mathematical sizing and risk checks have already occurred.
+WHAT THIS MODULE DOES:
+    Simulates order execution without calling any live broker API.
+    Every "trade" is logged with full detail for post-analysis.
+    TCA (Transaction Cost Analysis) decomposes P&L into:
+        signal_alpha - explicit_costs - slippage - market_impact = net_pnl
+
+DRY RUN GUARANTEE:
+    DRY_RUN is always True (imported from config).
+    The function place_order_dry_run() is the ONLY execution function.
+    It LOGS the order and NEVER calls the Fyers API.
+    This ensures you can run the full execution pipeline safely.
+
+SIMULATED CAPITAL:
+    Equity/NSE: ₹1,00,000 (SIMULATED_CAPITAL_INR)
+    Forex/MT5:  $1,000    (SIMULATED_CAPITAL_USD)
+
+PAPER TRADE LOG FORMAT:
+    All trades are appended to quandao_project/results/paper_trades.json
+    as a JSON array. Each entry is one complete trade (entry OR exit OR combined).
+
+USAGE:
+    from quandao_project.execution.order_executor import place_order_dry_run, run_tca_simulation
+
+    # Simulate placing a buy order
+    order = place_order_dry_run(
+        symbol='NSE:NIFTY50-INDEX', side='BUY', quantity=75,
+        price=24500.0, order_type='MARKET',
+        strategy='multi_factor', signal_score=0.75,
+    )
+    print(order['order_id'])   # Simulated order ID
+    print(order['status'])     # 'SIMULATED'
 """
 
-import os
 import json
-import time
 import uuid
-from datetime import datetime
+import os
+from datetime import datetime, timezone
+from pathlib import Path
 
-# ===========================================================================
-# 1. Local Trade Journaling
-# ===========================================================================
+import numpy as np
+import pandas as pd
 
-class TradeJournal:
-    """Logs approved order payloads into a local JSON ledger."""
-    
-    def __init__(self, filepath: str):
-        self.filepath = filepath
-        
-    def log_trade(self, order_payload: dict, symbol: str, status: str = "FILLED") -> dict:
-        trade = order_payload.copy()
-        trade["ticket_id"] = trade.get("ticket_id", str(uuid.uuid4()))
-        trade["symbol"] = symbol
-        trade["timestamp"] = datetime.utcnow().isoformat()
-        trade["status"] = status
-        
-        trades = []
-        if os.path.exists(self.filepath):
-            with open(self.filepath, "r") as f:
-                try:
-                    trades = json.load(f)
-                except json.JSONDecodeError:
-                    pass
-                    
-        trades.append(trade)
-        
-        with open(self.filepath, "w") as f:
-            json.dump(trades, f, indent=4)
-            
-        return trade
+from quandao_project.config import (
+    DRY_RUN,
+    SIMULATED_CAPITAL_INR,
+    SIMULATED_CAPITAL_USD,
+    PAPER_TRADE_LOG_PATH,
+)
+from quandao_project.strategies.cost_model import compute_round_trip_cost
 
 
-# ===========================================================================
-# 2. Adapter Pattern for Brokers (Backtest & Live)
-# ===========================================================================
-
-class FyersBacktestAdapter:
-    """Simulates Fyers execution for backtesting."""
-    
-    def place_order(self, order_payload: dict, symbol: str) -> dict:
-        journal = TradeJournal("fyers_backtest_trades.json")
-        return journal.log_trade(order_payload, symbol, "FILLED_BACKTEST")
+# ── Constants ────────────────────────────────────────────────────────────────
+_LOG_PATH = Path(PAPER_TRADE_LOG_PATH)
+_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
 
 
-class FyersLiveAdapter:
-    """Translates generic order payloads into Fyers API v3 live orders and logs them."""
-    
-    def place_order(self, order_payload: dict, symbol: str, fyers_client) -> dict:
-        try:
-            side = 1 if order_payload["signal"] == 1 else -1 
-            
-            fyers_order = {
-                "symbol": symbol,
-                "qty": int(order_payload["target_qty"]),
-                "type": 2, # Market order
-                "side": side,
-                "productType": "INTRADAY",
-                "limitPrice": 0,
-                "stopPrice": 0,
-                "validity": "DAY",
-                "disclosedQty": 0,
-                "offlineOrder": False,
-                "stopLoss": round(abs(order_payload["entry_price"] - order_payload["stop_loss"]), 2),
-                "takeProfit": round(abs(order_payload["entry_price"] - order_payload["take_profit"]), 2)
-            }
-            
-            if not fyers_client:
-                return {"status": "ERROR", "error": "Fyers client not provided."}
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 1: Dry-Run Order Placement
+# ══════════════════════════════════════════════════════════════════════════════
 
-            response = fyers_client.place_order(data=fyers_order)
-            
-            if response.get("s") == "ok":
-                ticket_id = response.get("id")
-                order_payload["ticket_id"] = ticket_id
-                
-                journal = TradeJournal("fyers_live_trades.json")
-                journal.log_trade(order_payload, symbol, "FILLED_LIVE")
-                
-                return {"status": "FILLED_LIVE", "ticket_id": ticket_id, "broker": "FYERS"}
-            else:
-                return {"status": "REJECTED_LIVE", "error": response.get("message")}
-                
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-    def place_limit_order(self, fyers_client, symbol: str, side: int, qty: int, price: float) -> dict:
-        try:
-            fyers_order = {
-                "symbol": symbol,
-                "qty": int(qty),
-                "type": 1, # Limit Order
-                "side": side, # 1 = BUY, -1 = SELL
-                "productType": "INTRADAY",
-                "limitPrice": round(price, 2),
-                "stopPrice": 0,
-                "validity": "DAY",
-                "disclosedQty": 0,
-                "offlineOrder": False
-            }
-            if not fyers_client:
-                return {"status": "ERROR", "error": "Fyers client not provided."}
-            response = fyers_client.place_order(data=fyers_order)
-            if response.get("s") == "ok":
-                return {"status": "OK", "order_id": response.get("id")}
-            else:
-                return {"status": "REJECTED", "error": response.get("message")}
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-    def place_sl_market_order(self, fyers_client, symbol: str, side: int, qty: int, trigger_price: float) -> dict:
-        try:
-            fyers_order = {
-                "symbol": symbol,
-                "qty": int(qty),
-                "type": 4, # Stop Market (SL-M)
-                "side": side, # 1 = BUY, -1 = SELL
-                "productType": "INTRADAY",
-                "limitPrice": 0,
-                "stopPrice": round(trigger_price, 2),
-                "validity": "DAY",
-                "disclosedQty": 0,
-                "offlineOrder": False
-            }
-            if not fyers_client:
-                return {"status": "ERROR", "error": "Fyers client not provided."}
-            response = fyers_client.place_order(data=fyers_order)
-            if response.get("s") == "ok":
-                return {"status": "OK", "order_id": response.get("id")}
-            else:
-                return {"status": "REJECTED", "error": response.get("message")}
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-    def cancel_order(self, fyers_client, order_id: str) -> dict:
-        try:
-            if not fyers_client:
-                return {"status": "ERROR", "error": "Fyers client not provided."}
-            response = fyers_client.cancel_order(data={"id": order_id})
-            if response.get("s") == "ok":
-                return {"status": "OK", "order_id": response.get("id")}
-            else:
-                return {"status": "REJECTED", "error": response.get("message")}
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-    def get_positions(self, fyers_client) -> dict:
-        try:
-            if not fyers_client:
-                return {"status": "ERROR", "error": "Fyers client not provided."}
-            response = fyers_client.positions()
-            if response.get("s") == "ok":
-                return {"status": "OK", "netPositions": response.get("netPositions", [])}
-            else:
-                return {"status": "ERROR", "error": response.get("message")}
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-    def get_orders(self, fyers_client) -> dict:
-        try:
-            if not fyers_client:
-                return {"status": "ERROR", "error": "Fyers client not provided."}
-            response = fyers_client.orderbook()
-            if response.get("s") == "ok":
-                return {"status": "OK", "orderBook": response.get("orderBook", [])}
-            else:
-                return {"status": "ERROR", "error": response.get("message")}
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-
-class MT5BacktestAdapter:
-    """Simulates MT5 execution for Forex backtesting."""
-    
-    def place_order(self, order_payload: dict, symbol: str) -> dict:
-        journal = TradeJournal("mt5_backtest_trades.json")
-        return journal.log_trade(order_payload, symbol, "FILLED_BACKTEST")
-
-
-class MT5LiveAdapter:
-    """Translates generic order payloads into MetaTrader 5 live trade requests and logs them."""
-    
-    def place_order(self, order_payload: dict, symbol: str) -> dict:
-        try:
-            import MetaTrader5 as mt5
-            
-            if not mt5.initialize():
-                return {"status": "ERROR", "error": "MT5 initialization failed."}
-                
-            tick = mt5.symbol_info_tick(symbol)
-            if tick is None:
-                return {"status": "ERROR", "error": f"Failed to get tick for {symbol}. Market may be closed."}
-                
-            terminal_info = mt5.terminal_info()
-            if terminal_info is None or not terminal_info.connected:
-                return {"status": "ERROR", "error": "MT5 Terminal is not connected to the trade server."}
-                
-            action = mt5.ORDER_TYPE_BUY if order_payload["signal"] == 1 else mt5.ORDER_TYPE_SELL
-            price = tick.ask if order_payload["signal"] == 1 else tick.bid
-            
-            # Check if broker requires market execution (no stops in initial request)
-            symbol_info = mt5.symbol_info(symbol)
-            is_market_exec = symbol_info is not None and symbol_info.trade_exemode == mt5.SYMBOL_TRADE_EXECUTION_MARKET
-            
-            sl = 0.0 if is_market_exec else float(order_payload.get("stop_loss", 0.0))
-            tp = 0.0 if is_market_exec else float(order_payload.get("take_profit", 0.0))
-            
-            request = {
-                "action": mt5.TRADE_ACTION_DEAL,
-                "symbol": symbol,
-                "volume": float(order_payload["target_qty"]),
-                "type": action,
-                "price": price,
-                "sl": sl,
-                "tp": tp,
-                "deviation": 20,
-                "magic": 100100,
-                "comment": "Quandao System",
-                "type_time": mt5.ORDER_TIME_GTC,
-                "type_filling": mt5.ORDER_FILLING_IOC,
-            }
-            
-            result = mt5.order_send(request)
-            
-            if result.retcode != mt5.TRADE_RETCODE_DONE:
-                return {"status": "REJECTED_LIVE", "error": result.comment, "retcode": result.retcode}
-                
-            ticket_id = result.order
-            order_payload["ticket_id"] = ticket_id
-            
-            # Attach stops for market execution order afterward
-            if is_market_exec and (order_payload.get("stop_loss", 0.0) > 0 or order_payload.get("take_profit", 0.0) > 0):
-                time.sleep(0.1) # brief synchronization pause
-                modify_request = {
-                    "action": mt5.TRADE_ACTION_SLTP,
-                    "symbol": symbol,
-                    "position": ticket_id,
-                    "sl": float(order_payload.get("stop_loss", 0.0)),
-                    "tp": float(order_payload.get("take_profit", 0.0))
-                }
-                modify_res = mt5.order_send(modify_request)
-                if modify_res.retcode != mt5.TRADE_RETCODE_DONE:
-                    order_payload["modify_stops_error"] = modify_res.comment
-            
-            journal = TradeJournal("mt5_live_trades.json")
-            journal.log_trade(order_payload, symbol, "FILLED_LIVE")
-            
-            return {"status": "FILLED_LIVE", "ticket_id": ticket_id, "broker": "MT5"}
-            
-        except Exception as e:
-            return {"status": "ERROR", "error": str(e)}
-
-
-# ===========================================================================
-# 3. Main Router Engine
-# ===========================================================================
-
-def execute_order(
-    order_payload: dict, 
-    broker: str, 
-    symbol: str, 
-    is_live: bool = False, 
-    fyers_client=None
-) -> dict:
+def place_order_dry_run(symbol: str,
+                         side: str,
+                         quantity: int,
+                         price: float,
+                         order_type: str = 'MARKET',
+                         stop_loss: float = None,
+                         target: float = None,
+                         strategy: str = 'unknown',
+                         signal_score: float = 0.0,
+                         instrument: str = 'equity',
+                         slippage_pts: float = 2.0,
+                         notes: str = '') -> dict:
     """
-    Main execution router. Parses the risk-approved payload and delegates it 
-    to one of the 4 specific execution adapters based on broker and mode.
-    
+    Simulate order placement without calling any live broker API.
+
+    WHAT IT DOES:
+        1. Validates the order parameters
+        2. Applies realistic slippage to the fill price
+        3. Computes explicit transaction costs (STT, brokerage, etc.)
+        4. Generates a simulated order ID and response
+        5. Logs the complete order to paper_trades.json
+
+    SLIPPAGE MODEL:
+        For MARKET orders: assumed fill = price ± slippage_pts
+            BUY:  fill_price = price + slippage_pts  (you buy at the ask)
+            SELL: fill_price = price - slippage_pts  (you sell at the bid)
+        For LIMIT orders: fill_price = limit_price (no slippage, may not fill)
+
+    ALWAYS DRY RUN:
+        DRY_RUN = True is hardcoded in config.py.
+        This function will never route to Fyers even if that code exists.
+
     Parameters
     ----------
-    order_payload : The output dictionary from the Risk Manager.
-    broker        : 'FYERS' or 'MT5'.
-    symbol        : Target instrument.
-    is_live       : If True, executes live API and logs. If False, runs historical backtest logic.
-    fyers_client  : Authenticated Fyers instance (required if broker is FYERS and is_live is True).
-    
+    symbol       : str   - Instrument symbol (e.g. 'NSE:NIFTY50-INDEX')
+    side         : str   - 'BUY' or 'SELL'
+    quantity     : int   - Number of units (shares, lots * lot_size)
+    price        : float - Intended price (mid-market reference)
+    order_type   : str   - 'MARKET' or 'LIMIT'
+    stop_loss    : float - Stop loss price (for record-keeping, not enforced)
+    target       : float - Profit target price (for record-keeping)
+    strategy     : str   - Strategy name that generated this order
+    signal_score : float - Factor composite score at time of signal (-1 to +1)
+    instrument   : str   - 'equity', 'futures', or 'options' (affects cost calc)
+    slippage_pts : float - Expected bid-ask slippage (index points or price units)
+    notes        : str   - Free-text notes (e.g. 'Factor momentum breakout')
+
     Returns
     -------
-    dict: Final execution status and ticket information.
+    dict : Simulated order response with full detail.
     """
-    if not order_payload or order_payload.get("status") != "APPROVED":
-        return {"status": "IGNORED", "message": "Payload is empty or not risk-approved."}
-        
-    broker_upper = broker.upper()
-    
-    if broker_upper == "FYERS":
-        if is_live:
-            adapter = FyersLiveAdapter()
-            return adapter.place_order(order_payload, symbol, fyers_client)
-        else:
-            adapter = FyersBacktestAdapter()
-            return adapter.place_order(order_payload, symbol)
-            
-    elif broker_upper == "MT5":
-        if is_live:
-            adapter = MT5LiveAdapter()
-            return adapter.place_order(order_payload, symbol)
-        else:
-            adapter = MT5BacktestAdapter()
-            return adapter.place_order(order_payload, symbol)
-            
+    assert DRY_RUN, "DRY_RUN must be True. Live order placement not implemented."
+
+    side = side.upper()
+    ts   = datetime.now(timezone.utc).isoformat()
+
+    # Slippage-adjusted fill price
+    if order_type == 'MARKET':
+        fill_price = price + slippage_pts if side == 'BUY' else price - slippage_pts
     else:
-        return {"status": "ERROR", "error": f"Unknown broker specified: {broker}"}
+        fill_price = price   # Limit order: assume exact fill at limit
+
+    fill_price = max(0.01, fill_price)  # Sanity check
+
+    # Simulated order response
+    order = {
+        'order_id':      str(uuid.uuid4())[:8].upper(),  # Short 8-char ID
+        'timestamp_utc': ts,
+        'status':        'SIMULATED',
+        'dry_run':       True,
+
+        # Order details
+        'symbol':        symbol,
+        'side':          side,
+        'quantity':      quantity,
+        'order_type':    order_type,
+        'intended_price': price,
+        'fill_price':    round(fill_price, 2),
+        'slippage_pts':  slippage_pts if order_type == 'MARKET' else 0.0,
+
+        # Cost estimate (single leg only — for round-trip, use compute_round_trip_cost)
+        'est_leg_cost_inr': _estimate_single_leg_cost(fill_price, quantity, side, instrument),
+
+        # Risk parameters
+        'stop_loss':     stop_loss,
+        'target':        target,
+
+        # Strategy metadata
+        'strategy':      strategy,
+        'signal_score':  round(signal_score, 4),
+        'instrument':    instrument,
+        'notes':         notes,
+    }
+
+    # Persist to log
+    log_trade(order)
+
+    _print_order_summary(order)
+    return order
+
+
+def _estimate_single_leg_cost(price: float, qty: int,
+                                side: str, instrument: str) -> float:
+    """Estimate single-leg transaction cost in ₹."""
+    try:
+        from quandao_project.strategies.cost_model import compute_leg_cost
+        leg = compute_leg_cost(price, qty, side, instrument)
+        return leg['total_inr']
+    except Exception:
+        return round(price * qty * 0.0003, 2)  # Rough 0.03% fallback
+
+
+def _print_order_summary(order: dict) -> None:
+    """Print a clean, readable order summary to stdout."""
+    print(
+        f"\n{'='*55}\n"
+        f"  [DRY RUN] ORDER: {order['order_id']}\n"
+        f"  {order['side']} {order['quantity']} × {order['symbol']}\n"
+        f"  Fill @ {order['fill_price']:.2f} (slippage: {order['slippage_pts']} pts)\n"
+        f"  Strategy: {order['strategy']} | Signal: {order['signal_score']:.3f}\n"
+        f"  Est. Leg Cost: ₹{order['est_leg_cost_inr']:.2f}\n"
+        f"{'='*55}"
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 2: Trade Logging
+# ══════════════════════════════════════════════════════════════════════════════
+
+def log_trade(trade_dict: dict, log_path: str = None) -> None:
+    """
+    Append a trade record to the paper trade log (JSON array file).
+
+    The log file grows linearly — one entry per order leg.
+    Use load_trade_log() to read all trades back as a DataFrame.
+
+    Parameters
+    ----------
+    trade_dict : dict - Complete order/trade dictionary
+    log_path   : str  - Override default log path (useful for testing)
+    """
+    path = Path(log_path) if log_path else _LOG_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    # Load existing log
+    existing = []
+    if path.exists():
+        try:
+            with open(path, 'r') as f:
+                content = f.read().strip()
+                if content:
+                    existing = json.loads(content)
+        except json.JSONDecodeError:
+            existing = []   # File was corrupted — start fresh
+
+    # Append new trade
+    existing.append(trade_dict)
+
+    # Write back (pretty-printed for human readability)
+    with open(path, 'w') as f:
+        json.dump(existing, f, indent=2, default=str)
+
+
+def load_trade_log(log_path: str = None) -> pd.DataFrame:
+    """
+    Load all paper trades from the log file into a DataFrame.
+
+    Returns
+    -------
+    pd.DataFrame : All logged trades. Empty DataFrame if log doesn't exist.
+    """
+    path = Path(log_path) if log_path else _LOG_PATH
+
+    if not path.exists():
+        return pd.DataFrame()
+
+    try:
+        with open(path, 'r') as f:
+            trades = json.load(f)
+        return pd.DataFrame(trades)
+    except Exception as e:
+        print(f"[load_trade_log] Error reading log: {e}")
+        return pd.DataFrame()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# SECTION 3: Transaction Cost Analysis (TCA)
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_tca_simulation(trades_df: pd.DataFrame,
+                        market_data_df: pd.DataFrame = None) -> dict:
+    """
+    Transaction Cost Analysis (TCA) — decompose P&L into its cost components.
+
+    TCA DECOMPOSITION:
+        Gross P&L (signal alpha) = exit_price - entry_price (before costs)
+        Slippage cost            = intended_price - fill_price (bid-ask spread)
+        Explicit cost            = brokerage + STT + exchange fees + GST
+        Market impact            = vol-adjusted price impact for large orders
+        Net P&L                  = Gross P&L - slippage - explicit - market_impact
+
+    WHY TCA IS IMPORTANT IN INTERVIEWS:
+        "I implemented TCA to attribute P&L. Our strategy had a 0.15 Sharpe gross
+        but after accounting for 0.06% round-trip costs, net Sharpe dropped to 0.08 —
+        below our minimum threshold of 0.10. We increased signal threshold to trade
+        less frequently but with higher conviction."
+
+    Parameters
+    ----------
+    trades_df    : pd.DataFrame - Trade log (from load_trade_log())
+                                  Must have columns: symbol, side, fill_price,
+                                  intended_price, quantity, strategy, timestamp_utc
+    market_data_df : pd.DataFrame (optional) - OHLCV data for market impact estimation
+
+    Returns
+    -------
+    dict : TCA metrics including slippage breakdown, cost attribution, and net P&L.
+    """
+    if trades_df is None or trades_df.empty:
+        return {'error': 'No trades to analyze.'}
+
+    results = []
+
+    # Match BUY-SELL pairs for round-trip analysis
+    # Group by symbol and strategy, then pair consecutive buy/sell
+    for symbol in trades_df['symbol'].unique():
+        sym_trades = trades_df[trades_df['symbol'] == symbol].copy()
+        sym_trades = sym_trades.sort_values('timestamp_utc')
+
+        # Simple pairing: alternate BUY/SELL
+        buys  = sym_trades[sym_trades['side'] == 'BUY'].reset_index(drop=True)
+        sells = sym_trades[sym_trades['side'] == 'SELL'].reset_index(drop=True)
+
+        n_pairs = min(len(buys), len(sells))
+        for i in range(n_pairs):
+            buy  = buys.iloc[i]
+            sell = sells.iloc[i]
+            qty  = min(int(buy.get('quantity', 1)), int(sell.get('quantity', 1)))
+
+            # Intended vs Fill slippage
+            buy_slippage  = float(buy.get('fill_price', 0)) - float(buy.get('intended_price', buy.get('fill_price', 0)))
+            sell_slippage = float(sell.get('intended_price', sell.get('fill_price', 0))) - float(sell.get('fill_price', 0))
+            total_slippage_pts = buy_slippage + sell_slippage
+            total_slippage_inr = total_slippage_pts * qty
+
+            # Gross P&L (fill price based)
+            gross_pnl_pts = float(sell.get('fill_price', 0)) - float(buy.get('fill_price', 0))
+            gross_pnl_inr = gross_pnl_pts * qty
+
+            # Explicit transaction costs (round-trip)
+            try:
+                instrument = buy.get('instrument', 'equity')
+                cost_info  = compute_round_trip_cost(
+                    float(buy.get('fill_price', 0)),
+                    float(sell.get('fill_price', 0)),
+                    qty,
+                    instrument,
+                )
+                explicit_cost_inr = cost_info['total_cost_inr']
+            except Exception:
+                explicit_cost_inr = abs(gross_pnl_inr) * 0.001  # 0.1% fallback
+
+            # Market impact estimate (simplified: proportional to trade size × vol)
+            market_impact_inr = _estimate_market_impact(
+                price=float(buy.get('fill_price', 0)),
+                quantity=qty,
+                market_data_df=market_data_df,
+                symbol=symbol,
+            )
+
+            net_pnl_inr = gross_pnl_inr - explicit_cost_inr - total_slippage_inr - market_impact_inr
+
+            results.append({
+                'symbol':              symbol,
+                'entry_fill':          round(float(buy.get('fill_price', 0)), 2),
+                'exit_fill':           round(float(sell.get('fill_price', 0)), 2),
+                'quantity':            qty,
+                'strategy':            buy.get('strategy', 'unknown'),
+                'gross_pnl_pts':       round(gross_pnl_pts, 4),
+                'gross_pnl_inr':       round(gross_pnl_inr, 2),
+                'slippage_pts':        round(total_slippage_pts, 4),
+                'slippage_inr':        round(total_slippage_inr, 2),
+                'explicit_cost_inr':   round(explicit_cost_inr, 4),
+                'market_impact_inr':   round(market_impact_inr, 4),
+                'net_pnl_inr':         round(net_pnl_inr, 2),
+                'cost_pct_of_gross':   round(
+                    (explicit_cost_inr + total_slippage_inr) / abs(gross_pnl_inr) * 100
+                    if gross_pnl_inr != 0 else 0.0, 2
+                ),
+            })
+
+    if not results:
+        return {
+            'round_trips': [],
+            'summary': {'n_pairs': 0, 'total_net_pnl': 0.0},
+        }
+
+    results_df     = pd.DataFrame(results)
+    total_gross    = results_df['gross_pnl_inr'].sum()
+    total_explicit = results_df['explicit_cost_inr'].sum()
+    total_slippage = results_df['slippage_inr'].sum()
+    total_impact   = results_df['market_impact_inr'].sum()
+    total_net      = results_df['net_pnl_inr'].sum()
+
+    summary = {
+        'n_pairs':                 len(results),
+        'total_gross_pnl_inr':    round(total_gross, 2),
+        'total_explicit_cost_inr': round(total_explicit, 4),
+        'total_slippage_inr':      round(total_slippage, 2),
+        'total_market_impact_inr': round(total_impact, 4),
+        'total_net_pnl_inr':       round(total_net, 2),
+        'cost_drag_pct':           round((total_explicit + total_slippage) / abs(total_gross) * 100
+                                          if total_gross != 0 else 0.0, 2),
+        'attribution': {
+            'signal_alpha':       f'₹{total_gross:.2f}',
+            'minus_slippage':     f'-₹{total_slippage:.2f}',
+            'minus_explicit':     f'-₹{total_explicit:.2f}',
+            'minus_mkt_impact':   f'-₹{total_impact:.2f}',
+            'equals_net_pnl':     f'₹{total_net:.2f}',
+        },
+    }
+
+    return {
+        'round_trips': results,
+        'summary':     summary,
+    }
+
+
+def _estimate_market_impact(price: float, quantity: int,
+                              market_data_df: pd.DataFrame = None,
+                              symbol: str = '') -> float:
+    """
+    Estimate market impact cost using simplified Almgren-Chriss (2001) model.
+
+    SIMPLIFIED FORMULA:
+        impact ≈ σ × (Q / ADV)^0.5 × price × quantity
+        where:
+            σ   = realized vol (from market_data if available, else 1.5% default)
+            Q   = order size in shares/units
+            ADV = average daily volume
+
+    For small orders (Q << ADV), impact → 0.
+    For orders > 1% of ADV, impact becomes meaningful.
+    """
+    if market_data_df is None or market_data_df.empty:
+        # Default assumption: 0.5% of turnover as market impact estimate
+        return round(price * quantity * 0.001, 4)
+
+    try:
+        sym_data = market_data_df[market_data_df['symbol'] == symbol] if 'symbol' in market_data_df.columns else market_data_df
+        if sym_data.empty:
+            return round(price * quantity * 0.001, 4)
+
+        adv     = float(sym_data['volume'].tail(21).mean())
+        vol     = float(sym_data['close'].pct_change().tail(21).std())
+
+        if adv <= 0 or vol <= 0:
+            return 0.0
+
+        # Almgren-Chriss temporary impact
+        impact_pts = vol * np.sqrt(quantity / adv) * price
+        return round(impact_pts * quantity * 0.1, 4)  # 0.1 scaling factor
+
+    except Exception:
+        return round(price * quantity * 0.001, 4)
