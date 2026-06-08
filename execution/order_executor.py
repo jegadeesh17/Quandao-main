@@ -37,6 +37,7 @@ USAGE:
 """
 
 import json
+import logging
 import uuid
 import os
 from datetime import datetime, timezone
@@ -44,6 +45,8 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 from quandao_public.config import (
     DRY_RUN,
@@ -176,15 +179,18 @@ def _estimate_single_leg_cost(price: float, qty: int,
 
 
 def _print_order_summary(order: dict) -> None:
-    """Print a clean, readable order summary to stdout."""
-    print(
-        f"\n{'='*55}\n"
-        f"  [DRY RUN] ORDER: {order['order_id']}\n"
-        f"  {order['side']} {order['quantity']} × {order['symbol']}\n"
-        f"  Fill @ {order['fill_price']:.2f} (slippage: {order['slippage_pts']} pts)\n"
-        f"  Strategy: {order['strategy']} | Signal: {order['signal_score']:.3f}\n"
-        f"  Est. Leg Cost: ₹{order['est_leg_cost_inr']:.2f}\n"
-        f"{'='*55}"
+    """Log a clean order summary at INFO level."""
+    logger.info(
+        "[DRY RUN] %s %s x%s @ %.2f | slippage=%.1fpts | "
+        "strategy=%s signal=%.3f | leg_cost=Rs %.2f",
+        order['side'],
+        order['symbol'],
+        order['quantity'],
+        order['fill_price'],
+        order['slippage_pts'],
+        order['strategy'],
+        order['signal_score'],
+        order['est_leg_cost_inr'],
     )
 
 
@@ -392,40 +398,94 @@ def run_tca_simulation(trades_df: pd.DataFrame,
 
 
 def _estimate_market_impact(price: float, quantity: int,
-                              market_data_df: pd.DataFrame = None,
-                              symbol: str = '') -> float:
+                               market_data_df: pd.DataFrame = None,
+                               symbol: str = '') -> float:
     """
-    Estimate market impact cost using simplified Almgren-Chriss (2001) model.
+    Estimate market impact using the Almgren-Chriss (2001) framework.
 
-    SIMPLIFIED FORMULA:
-        impact ≈ σ × (Q / ADV)^0.5 × price × quantity
-        where:
-            σ   = realized vol (from market_data if available, else 1.5% default)
-            Q   = order size in shares/units
-            ADV = average daily volume
+    The AC model separates impact into two economically distinct components:
 
-    For small orders (Q << ADV), impact → 0.
-    For orders > 1% of ADV, impact becomes meaningful.
+        Temporary impact  h(v) = eta  * (Q / ADV)^alpha * price
+            Cost of trading at participation rate v = Q/ADV.
+            This is the bid-ask spread + short-term price pressure.
+            It FULLY RECOVERS after the trade completes.
+
+        Permanent impact  g(v) = gamma * (Q / ADV) * price
+            Persistent price shift caused by information leakage.
+            The market infers your intent from order flow and reprices.
+            This does NOT recover.
+
+        Total cost (single execution, no schedule decomposition):
+            I = (temp_impact_per_unit + perm_impact_per_unit) * quantity
+
+    Note on parameters:
+        The full AC framework solves for an OPTIMAL LIQUIDATION SCHEDULE
+        (how to slice a large order over time T to minimise expected cost +
+        risk aversion * variance of cost). This function computes the
+        lump-sum impact for a single market order — a valid simplification
+        for small orders (Q << ADV) where schedule optimisation adds little.
+
+        Calibrate eta and gamma from your own order book / fill data.
+        Literature values for US equities (Almgren et al., 2005):
+            eta   ~= 0.142  (temporary)
+            gamma ~= 0.314  (permanent)
+        Conservative NSE mid-cap estimates used below until calibration:
+            eta   = 0.10
+            gamma = 0.05
+
+    ACADEMIC REFERENCE:
+        Almgren & Chriss (2001), "Optimal Execution of Portfolio Transactions."
+        Journal of Risk 3(2): 5-39.
+        Almgren et al. (2005), "Direct Estimation of Equity Market Impact."
+        Risk 18(7): 58-62.
+
+    Parameters
+    ----------
+    price          : float         - Fill price per unit
+    quantity       : int           - Order size (units / shares)
+    market_data_df : pd.DataFrame  - OHLCV data to compute ADV (21-day)
+    symbol         : str           - Symbol for filtering panel DataFrames
+
+    Returns
+    -------
+    float : Total market impact cost in ₹. Returns 0.0 when ADV cannot be computed.
     """
+    # Almgren-Chriss model parameters (calibrate from live fill data).
+    # Until calibration data is available, use conservative NSE estimates.
+    ETA   = 0.10   # Temporary impact coefficient
+    GAMMA = 0.05   # Permanent impact coefficient
+    ALPHA = 0.5    # Square-root law exponent (empirically robust; Almgren et al., 2005)
+
     if market_data_df is None or market_data_df.empty:
-        # Default assumption: 0.5% of turnover as market impact estimate
-        return round(price * quantity * 0.001, 4)
+        # Cannot compute ADV without market data.
+        # Return 0 rather than a fabricated percentage — unknown is better than wrong.
+        return 0.0
 
     try:
-        sym_data = market_data_df[market_data_df['symbol'] == symbol] if 'symbol' in market_data_df.columns else market_data_df
+        sym_data = (
+            market_data_df[market_data_df['symbol'] == symbol]
+            if 'symbol' in market_data_df.columns
+            else market_data_df
+        )
         if sym_data.empty:
-            return round(price * quantity * 0.001, 4)
-
-        adv     = float(sym_data['volume'].tail(21).mean())
-        vol     = float(sym_data['close'].pct_change().tail(21).std())
-
-        if adv <= 0 or vol <= 0:
             return 0.0
 
-        # Almgren-Chriss temporary impact
-        impact_pts = vol * np.sqrt(quantity / adv) * price
-        return round(impact_pts * quantity * 0.1, 4)  # 0.1 scaling factor
+        adv = float(sym_data['volume'].tail(21).mean())
+        if adv <= 0:
+            return 0.0
+
+        participation_rate = quantity / adv  # Q / ADV: fraction of daily volume traded
+
+        # Temporary impact per unit: recovers fully after execution
+        temp_impact_per_unit = ETA * (participation_rate ** ALPHA) * price
+
+        # Permanent impact per unit: persistent repricing from information leakage
+        perm_impact_per_unit = GAMMA * participation_rate * price
+
+        total_impact_inr = (temp_impact_per_unit + perm_impact_per_unit) * quantity
+        return round(total_impact_inr, 4)
 
     except Exception:
-        return round(price * quantity * 0.001, 4)
+        return 0.0
+
 

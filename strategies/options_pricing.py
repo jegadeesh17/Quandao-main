@@ -161,7 +161,7 @@ def iv_newton_raphson(market_price: float, S: float, K: float, T: float, r: floa
                        option_type: str = 'call',
                        initial_guess: float = 0.20,
                        tol: float = 1e-6,
-                       max_iter: int = 100) -> float:
+                       max_iter: int = 10) -> float:
     """
     Newton-Raphson Implied Volatility solver.
 
@@ -174,12 +174,17 @@ def iv_newton_raphson(market_price: float, S: float, K: float, T: float, r: floa
             σ_{n+1} = σ_n - f(σ_n) / f'(σ_n)
                      = σ_n - (BS_price(σ_n) - market_price) / Vega(σ_n)
 
-        Converges quadratically → typically 5–15 iterations to 6 decimal places.
+        Converges quadratically → typically 5–10 iterations to 6 decimal places.
 
     FAILURE CASES:
-        1. Deep ITM/OTM: Vega → 0, update becomes unstable → switch to bisection
-        2. Expired (T=0): No solution exists → return NaN
-        3. Price below intrinsic value: No real IV exists → return NaN
+        1. Deep ITM/OTM: Vega → 0, update becomes unstable → return NaN → caller uses bisection
+        2. Non-convergence after max_iter: returns NaN → caller uses bisection
+        3. Expired (T=0): No solution exists → return NaN
+        4. Price below intrinsic value: No real IV exists → return NaN
+
+    CONTRACT: this function ALWAYS returns NaN on any failure. It never returns
+    a non-converged estimate. The caller (implied_volatility) is responsible for
+    deciding whether to invoke the bisection fallback.
 
     Parameters
     ----------
@@ -188,11 +193,11 @@ def iv_newton_raphson(market_price: float, S: float, K: float, T: float, r: floa
     option_type   : str   - 'call' or 'put'
     initial_guess : float - Starting sigma (default 0.20 = 20%)
     tol           : float - Convergence tolerance (default 1e-6 = price accuracy)
-    max_iter      : int   - Maximum iterations before giving up
+    max_iter      : int   - Maximum iterations (default 10; fall back to bisection after)
 
     Returns
     -------
-    float : Implied volatility (annualized). NaN if no solution found.
+    float : Implied volatility (annualized). NaN on ANY failure or non-convergence.
     """
     if T <= 0 or market_price <= 0:
         return float('nan')
@@ -221,7 +226,9 @@ def iv_newton_raphson(market_price: float, S: float, K: float, T: float, r: floa
         sigma -= price_diff / vega_abs
         sigma  = max(1e-4, min(sigma, 20.0))   # Keep in [0.01%, 2000%]
 
-    return round(sigma, 8)  # Return best estimate even if not fully converged
+    # Exhausted max_iter without meeting tol — signal non-convergence to caller.
+    # implied_volatility() will invoke iv_bisection() as the robust fallback.
+    return float('nan')
 
 
 def iv_bisection(market_price: float, S: float, K: float, T: float, r: float,
@@ -288,11 +295,13 @@ def implied_volatility(market_price: float, S: float, K: float, T: float, r: flo
     -------
     float : Implied volatility (annualized). NaN if unsolvable.
     """
-    # Try Newton-Raphson first (fast)
+    # Try Newton-Raphson first (fast, max 10 iterations).
+    # NR returns NaN on: near-zero Vega, non-convergence, expired option, sub-intrinsic price.
     iv = iv_newton_raphson(market_price, S, K, T, r, option_type)
 
-    if np.isnan(iv) or iv <= 0:
-        # Fall back to bisection (robust)
+    if not np.isfinite(iv) or iv <= 0:
+        # Bisection fallback: slower but guaranteed to converge when a root exists.
+        # Handles all cases where NR fails: deep ITM/OTM, non-convergence after 10 iters.
         iv = iv_bisection(market_price, S, K, T, r, option_type)
 
     return iv

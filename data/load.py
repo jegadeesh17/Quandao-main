@@ -1,19 +1,34 @@
+import logging
 import os
 import pandas as pd
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+from sqlalchemy.pool import QueuePool
 
 # Load .env from the project root (two levels up from quandao_public/data/)
 _this_dir     = os.path.dirname(os.path.abspath(__file__))
 _project_root = os.path.dirname(os.path.dirname(_this_dir))
 load_dotenv(os.path.join(_project_root, ".env"))
 
+logger = logging.getLogger(__name__)
+
 DB_URL = os.getenv("DATABASE_URL")
+
+# Module-level engine: one connection pool shared across all calls.
+# pool_size=5 handles concurrent dashboard requests without exhausting PG connections.
+# pool_pre_ping=True detects and discards stale connections before use.
+_engine = create_engine(
+    DB_URL,
+    poolclass=QueuePool,
+    pool_size=5,
+    max_overflow=10,
+    pool_pre_ping=True,
+) if DB_URL else None
+
 
 def load_ohlcv_day(symbol: str,
                    from_date: str,
-                   to_date: str,):
-    engine = create_engine(DB_URL)
+                   to_date: str) -> pd.DataFrame:
     sql = text("""
     SELECT
 
@@ -31,33 +46,33 @@ def load_ohlcv_day(symbol: str,
     AND time < :to_date
     """)
 
-    df = pd.read_sql(
-        sql,
-        engine,
-        params = {
-            "symbol": symbol,
-            "from_date": from_date,
-            "to_date": to_date,
+    try:
+        df = pd.read_sql(
+            sql,
+            _engine,
+            params={
+                "symbol":    symbol,
+                "from_date": from_date,
+                "to_date":   to_date,
             },
-    )
+        )
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception as e:
+        logger.error("load_ohlcv_day failed for %s: %s", symbol, e)
+        return pd.DataFrame()
 
-    # df["trading_day"] = pd.to_datetime(df["trading_day"])
-    df = df.sort_values("time").reset_index(drop=True)
-
-    return df
 
 def load_ohlcv_week(symbol: str,
-                  from_date: str,
-                  to_date: str,):
-    engine = create_engine(DB_URL)
+                    from_date: str,
+                    to_date: str) -> pd.DataFrame:
     sql = text("""
     SELECT
-    
+
     time_bucket(
     '1 week',
     time
     ) AS bucket,
-    
+
     first(open, time) AS open,
     max(high) AS high,
     min(low) AS low,
@@ -74,33 +89,35 @@ def load_ohlcv_week(symbol: str,
     ORDER BY bucket;
     """)
 
-    df = pd.read_sql(
-        sql,
-        engine,
-        params = {
-            "symbol" : symbol,
-            "from_date" : from_date,
-            "to_date": to_date,
-        },
-    )
-    df = df.rename(columns={"bucket": "time"})
-    df = df.sort_values("time").reset_index(drop=True)
+    try:
+        df = pd.read_sql(
+            sql,
+            _engine,
+            params={
+                "symbol":    symbol,
+                "from_date": from_date,
+                "to_date":   to_date,
+            },
+        )
+        df = df.rename(columns={"bucket": "time"})
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception as e:
+        logger.error("load_ohlcv_week failed for %s: %s", symbol, e)
+        return pd.DataFrame()
 
-    return df
 
 
 def load_ohlcv_month(symbol: str,
-                  from_date: str,
-                  to_date: str,):
-    engine = create_engine(DB_URL)
+                     from_date: str,
+                     to_date: str) -> pd.DataFrame:
     sql = text("""
     SELECT
-    
+
     time_bucket(
     '1 month',
     time
     ) AS bucket,
-    
+
     first(open, time) AS open,
     max(high) AS high,
     min(low) AS low,
@@ -117,33 +134,34 @@ def load_ohlcv_month(symbol: str,
     ORDER BY bucket;
     """)
 
-    df = pd.read_sql(
-        sql,
-        engine,
-        params = {
-            "symbol" : symbol,
-            "from_date" : from_date,
-            "to_date": to_date,
-        },
-    )
+    try:
+        df = pd.read_sql(
+            sql,
+            _engine,
+            params={
+                "symbol":    symbol,
+                "from_date": from_date,
+                "to_date":   to_date,
+            },
+        )
+        df = df.rename(columns={"bucket": "time"})
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception as e:
+        logger.error("load_ohlcv_month failed for %s: %s", symbol, e)
+        return pd.DataFrame()
 
-    df = df.rename(columns={"bucket": "time"})
-    df = df.sort_values("time").reset_index(drop=True)
-
-    return df
 
 def load_ohlcv_year(symbol: str,
-                  from_date: str,
-                  to_date: str,):
-    engine = create_engine(DB_URL)
+                    from_date: str,
+                    to_date: str) -> pd.DataFrame:
     sql = text("""
     SELECT
-    
+
     time_bucket(
     '1 year',
     time
     ) AS bucket,
-    
+
     first(open, time) AS open,
     max(high) AS high,
     min(low) AS low,
@@ -160,42 +178,43 @@ def load_ohlcv_year(symbol: str,
     ORDER BY bucket;
     """)
 
-    df = pd.read_sql(
-        sql,
-        engine,
-        params = {
-            "symbol" : symbol,
-            "from_date" : from_date,
-            "to_date": to_date,
-        },
-    )
+    try:
+        df = pd.read_sql(
+            sql,
+            _engine,
+            params={
+                "symbol":    symbol,
+                "from_date": from_date,
+                "to_date":   to_date,
+            },
+        )
+        df = df.rename(columns={"bucket": "time"})
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception as e:
+        logger.error("load_ohlcv_year failed for %s: %s", symbol, e)
+        return pd.DataFrame()
 
-    df = df.rename(columns={"bucket":"time"})
-    df = df.sort_values("time").reset_index(drop=True)
-
-    return df
 
 def load_ohlcv_nmin(symbol: str,
-               resolution: str,
-               from_date: str,
-               to_date: str,
-               session_start: str = '09:15',
-               session_end: str = '15:30',):
-    engine = create_engine(DB_URL)
+                    resolution: str,
+                    from_date: str,
+                    to_date: str,
+                    session_start: str = '09:15',
+                    session_end: str = '15:30') -> pd.DataFrame:
     sql = text("""
     SELECT
-    
+
     time_bucket(
     :bucket_size,
     time,
     date(time) + time :session_start) AS bucket,
-    
+
     first(open, time) AS open,
     max(high) AS high,
     min(low) AS low,
     last(close, time) AS close,
     sum(volume) AS volume
-    
+
     FROM market_candles
     WHERE symbol = :symbol
     AND resolution = '1'
@@ -203,30 +222,32 @@ def load_ohlcv_nmin(symbol: str,
     AND time < :to_date
     AND time >= date(time) + time :session_start
     AND time <= date(time) + time :session_end
-    
+
     GROUP BY bucket
     ORDER BY bucket
     """)
 
-    df = pd.read_sql(
-        sql,
-        engine,
-        params={
-            "symbol" : symbol,
-            "bucket_size": resolution,
-            "from_date": from_date,
-            "to_date": to_date,
-            "session_start": session_start,
-            "session_end": session_end,
+    try:
+        df = pd.read_sql(
+            sql,
+            _engine,
+            params={
+                "symbol":       symbol,
+                "bucket_size":  resolution,
+                "from_date":    from_date,
+                "to_date":      to_date,
+                "session_start": session_start,
+                "session_end":  session_end,
             },
-    )
+        )
+        df["bucket"] = pd.to_datetime(df["bucket"])
+        df["bucket"] = df["bucket"].dt.tz_convert("Asia/Kolkata")
+        df = df.rename(columns={"bucket": "time"})
+        return df.sort_values("time").reset_index(drop=True)
+    except Exception as e:
+        logger.error("load_ohlcv_nmin failed for %s @ %s: %s", symbol, resolution, e)
+        return pd.DataFrame()
 
-    df["bucket"] = pd.to_datetime(df["bucket"])
-    df["bucket"] = df["bucket"].dt.tz_convert("Asia/Kolkata")
-    df = df.rename(columns={"bucket": "time"})
-    df = df.sort_values("time").reset_index(drop=True)
-
-    return df
 
 def load_ohlcv(symbol: str,
                resolution: str,

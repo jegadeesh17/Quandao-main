@@ -1,14 +1,31 @@
-from flask import Flask, render_template, request, jsonify
-from datetime import datetime, timedelta
-import sys
+import logging
 import os
+import sys
+from datetime import datetime, timedelta
+
 import pandas as pd
+from flask import Flask, jsonify, render_template, request
+
+# ── Logging bootstrap ────────────────────────────────────────────────────────
+# Must be configured before any quandao module imports so sub-loggers inherit.
+os.makedirs("logs", exist_ok=True)
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s  %(levelname)-8s  %(name)s — %(message)s",
+    datefmt="%Y-%m-%d %H:%M:%S",
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler("logs/quandao.log", encoding="utf-8"),
+    ],
+)
+logger = logging.getLogger(__name__)
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from quandao_public.data.load import load_ohlcv
+from quandao_public.data.load import load_ohlcv  # noqa: E402
 
 app = Flask(__name__)
+
 
 
 def get_available_instruments():
@@ -142,27 +159,21 @@ def get_chart_data():
                 # Only set hasMore=False if we explicitly know we've reached the beginning
                 has_more = True  # Assume more exists; frontend will handle empty responses
 
-        candlestick_data = []
-        volume_data = []
+        # ── Vectorized serialisation — no .iterrows() ────────────────────────
+        # Convert timestamps to Unix seconds in one vectorized operation
+        df["_ts"] = (df["time"].astype("int64") // 10 ** 9).astype(int)
+        records = df[["_ts", "open", "high", "low", "close", "volume"]].to_dict("records")
 
-        for _, row in df.iterrows():
-            timestamp = int(row["time"].timestamp())
-            candlestick_data.append(
-                {
-                    "time": timestamp,
-                    "open": float(row["open"]),
-                    "high": float(row["high"]),
-                    "low": float(row["low"]),
-                    "close": float(row["close"]),
-                }
-            )
-            volume_data.append(
-                {
-                    "time": timestamp,
-                    "value": float(row["volume"]),
-                    "color": "#1a5a54" if row["close"] >= row["open"] else "#7f312f",
-                }
-            )
+        candlestick_data = [
+            {"time": r["_ts"], "open": float(r["open"]), "high": float(r["high"]),
+             "low": float(r["low"]), "close": float(r["close"])}
+            for r in records
+        ]
+        volume_data = [
+            {"time": r["_ts"], "value": float(r["volume"]),
+             "color": "#1a5a54" if r["close"] >= r["open"] else "#7f312f"}
+            for r in records
+        ]
 
         # Get earliest time for pagination cursor
         if len(df) > 0:
@@ -195,7 +206,9 @@ def get_chart_data():
         return jsonify(response_data)
 
     except Exception as e:
+        logger.error("/api/data failed for %s (%s): %s", symbol_name, resolution, e, exc_info=True)
         return jsonify({"error": str(e)}), 500
+
 
 
 @app.route("/api/backtest", methods=["POST"])

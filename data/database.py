@@ -22,6 +22,7 @@ USAGE:
                     from_date="2023-01-01", to_date="2024-01-01")
 """
 
+import logging
 import os
 import sys
 from pathlib import Path
@@ -31,6 +32,9 @@ import pandas as pd
 import psycopg2
 from dotenv import load_dotenv
 from sqlalchemy import create_engine, text
+
+logger = logging.getLogger(__name__)
+
 
 # ── Project Root & .env Setup ───────────────────────────────────────────────
 # Walk up from this file: database.py → data/ → quandao_public/ → Quandao-main/
@@ -121,8 +125,9 @@ def load_ohlcv(symbol: str,
         return df if df is not None else pd.DataFrame()
 
     except Exception as e:
-        print(f"[database.load_ohlcv] Failed for {symbol} ({resolution}): {e}")
+        logger.error("load_ohlcv failed for %s (%s): %s", symbol, resolution, e)
         return pd.DataFrame()
+
 
 
 def _normalize_date_str(date_str: str, is_end: bool = False) -> str:
@@ -200,8 +205,9 @@ def load_fundamentals(conn, symbols: list) -> pd.DataFrame:
         return df
 
     except Exception as e:
-        print(f"[database.load_fundamentals] Query failed: {e}")
+        logger.error("load_fundamentals query failed: %s", e)
         return pd.DataFrame()
+
 
 
 # ── Utility: Latest Timestamp ────────────────────────────────────────────────
@@ -216,6 +222,7 @@ def get_latest_timestamp(symbol: str, resolution: str):
     -------
     datetime or None
     """
+    conn = None
     try:
         conn = get_connection()
         with conn.cursor() as cur:
@@ -224,9 +231,12 @@ def get_latest_timestamp(symbol: str, resolution: str):
                 WHERE symbol = %s AND resolution = %s;
             """, (symbol, resolution))
             result = cur.fetchone()
-        conn.close()
         return result[0] if result and result[0] else None
     except Exception as e:
-        print(f"[database.get_latest_timestamp] Error: {e}")
+        logger.error("get_latest_timestamp failed for %s (%s): %s", symbol, resolution, e)
         return None
+    finally:
+        if conn is not None:
+            conn.close()
+
 

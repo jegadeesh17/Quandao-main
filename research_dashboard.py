@@ -288,7 +288,7 @@ def main():
 | EMA 21>50>200 | 10 |
 | Fib 0.50-0.618 | 10 |
 | Candle Pattern | 10 |
-| Daily Low > Prev | 5 |
+| Daily HH+HL | 5 |
         """)
 
         if st.button("🔍 Run Swing Scanner", key="run_swing_scanner_btn", type="primary"):

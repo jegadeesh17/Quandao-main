@@ -48,11 +48,15 @@ USAGE:
     )
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from scipy.stats import spearmanr
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+
+logger = logging.getLogger(__name__)
+
 
 
 # ── Sector Neutralization ────────────────────────────────────────────────────
@@ -484,6 +488,7 @@ def generate_pca_stat_arb_signals(panel_df: pd.DataFrame,
         return pd.DataFrame(signals).sort_values('residual_zscore')
 
     except Exception as e:
-        print(f"[generate_pca_stat_arb_signals] Error: {e}")
+        logger.error("generate_pca_stat_arb_signals failed: %s", e, exc_info=True)
         return pd.DataFrame()
+
 

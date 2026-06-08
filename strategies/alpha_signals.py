@@ -34,10 +34,14 @@ USAGE:
     print(garch_df['cond_vol'].iloc[-1])  # Today's conditional vol in % daily
 """
 
+import logging
 import numpy as np
 import pandas as pd
 from sklearn.decomposition import PCA
 from sklearn.preprocessing import StandardScaler
+
+logger = logging.getLogger(__name__)
+
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -115,13 +119,14 @@ def estimate_garch_volatility(df: pd.DataFrame,
         df['cond_vol'] = cond_vol_series
 
     except ImportError:
-        # Fallback: rolling standard deviation of log returns (annot a GARCH model,
+        # Fallback: rolling standard deviation of log returns (not a GARCH model,
         # but gives a reasonable volatility estimate for the screener)
         rolling_vol = returns.rolling(window=21, min_periods=5).std() * 100
         cond_vol_series = pd.Series(np.nan, index=df.index)
         cond_vol_series.loc[returns.index] = rolling_vol.values
         df['cond_vol'] = cond_vol_series
-        print("[alpha_signals] WARNING: `arch` library not found. Using rolling std as fallback.")
+        logger.warning("`arch` library not installed; falling back to 21-day rolling std")
+
 
     except Exception as e:
         # GARCH fit can fail on very short or flat series
@@ -129,7 +134,11 @@ def estimate_garch_volatility(df: pd.DataFrame,
         cond_vol_series = pd.Series(np.nan, index=df.index)
         cond_vol_series.loc[returns.index] = rolling_vol.values
         df['cond_vol'] = cond_vol_series
-        print(f"[alpha_signals] GARCH estimation failed ({e}). Using rolling std fallback.")
+        logger.error(
+            "EGARCH fit failed for series of length %d: %s",
+            len(returns), e, exc_info=True,
+        )
+
 
     return df
 
@@ -287,6 +296,7 @@ def compute_pca_residuals(panel_df: pd.DataFrame,
         return result.sort_values('residual_zscore').reset_index(drop=True)
 
     except Exception as e:
-        print(f"[compute_pca_residuals] Error: {e}")
+        logger.error("compute_pca_residuals failed: %s", e, exc_info=True)
         return pd.DataFrame()
+
 
