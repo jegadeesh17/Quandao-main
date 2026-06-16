@@ -24,7 +24,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from quandao_public.strategies.options_pricing import (
+from quandao_public.engine.derivatives.options_pricing import (
     black_scholes,
     implied_volatility,
     iv_newton_raphson,

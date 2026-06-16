@@ -39,7 +39,7 @@ ACADEMIC REFERENCES:
       Overfitting", JCAM
 
 USAGE:
-    from quandao_public.strategies.cpcv_validation import (
+    from quandao_public.engine.validation.cpcv_validation import (
         run_cpcv_backtest, compute_dsr, compute_prob_dsr
     )
 

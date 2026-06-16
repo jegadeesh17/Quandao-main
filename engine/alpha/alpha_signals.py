@@ -26,7 +26,7 @@ WHY GARCH FOR REGIME DETECTION:
         This prevents drawdown cascades during volatile regimes.
 
 USAGE:
-    from quandao_public.strategies.alpha_signals import (
+    from quandao_public.engine.alpha.alpha_signals import (
         estimate_garch_volatility, compute_pca_residuals
     )
 

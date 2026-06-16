@@ -13,7 +13,7 @@ DESIGN:
     Pure functions only — no state, no side effects, easy to audit.
 
 USAGE:
-    from quandao_public.strategies.position_sizing import fixed_fractional, kelly_fraction
+    from quandao_public.engine.risk.position_sizing import fixed_fractional, kelly_fraction
 
     # How many NIFTY futures contracts should we buy?
     n_lots = fixed_fractional(

@@ -18,7 +18,7 @@ INTERVIEW ANSWERS EMBEDDED IN DOCSTRINGS:
     - Why include zero-return days in Sharpe? → Prevents inflation by only counting trade days.
 
 USAGE:
-    from quandao_public.strategies.metrics import compute_all_metrics
+    from quandao_public.engine.validation.metrics import compute_all_metrics
 
     result = compute_all_metrics(trades=trade_list, daily_returns=daily_pnl_series)
     print(result['sharpe_ratio'], result['sortino_ratio'])

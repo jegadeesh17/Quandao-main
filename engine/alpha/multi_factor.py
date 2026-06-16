@@ -40,7 +40,7 @@ WHAT EACH FUNCTION DOES:
         stocks relative to their principal component factor model.
 
 USAGE:
-    from quandao_public.strategies.multi_factor import (
+    from quandao_public.engine.alpha.multi_factor import (
         generate_multi_factor_composite,
         generate_directional_signal_from_composite,
         neutralize_factor,

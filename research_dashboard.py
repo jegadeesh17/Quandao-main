@@ -14,11 +14,11 @@ import matplotlib.pyplot as plt
 import seaborn as sns
 from datetime import datetime, timedelta, timezone
 
-from quandao_public.strategies.cpcv_validation import run_cpcv_backtest, compute_dsr, compute_prob_dsr
+from quandao_public.engine.validation.cpcv_validation import run_cpcv_backtest, compute_dsr, compute_prob_dsr
 from quandao_public.data.database import load_ohlcv
 from quandao_public.data.factor_engine import compute_all_price_factors
-from quandao_public.strategies.multi_factor import generate_multi_factor_composite, generate_directional_signal_from_composite, neutralize_factor
-from quandao_public.strategies.swing_signals import (
+from quandao_public.engine.alpha.multi_factor import generate_multi_factor_composite, generate_directional_signal_from_composite, neutralize_factor
+from quandao_public.engine.alpha.swing_signals import (
     detect_hh_hl_structure,
     detect_daily_hl,
     is_at_higher_low,

@@ -54,7 +54,7 @@ from quandao_public.config import (
     SIMULATED_CAPITAL_USD,
     PAPER_TRADE_LOG_PATH,
 )
-from quandao_public.strategies.cost_model import compute_round_trip_cost
+from quandao_public.engine.risk.cost_model import compute_round_trip_cost
 
 
 # ── Constants ────────────────────────────────────────────────────────────────
@@ -171,7 +171,7 @@ def _estimate_single_leg_cost(price: float, qty: int,
                                 side: str, instrument: str) -> float:
     """Estimate single-leg transaction cost in ₹."""
     try:
-        from quandao_public.strategies.cost_model import compute_leg_cost
+        from quandao_public.engine.risk.cost_model import compute_leg_cost
         leg = compute_leg_cost(price, qty, side, instrument)
         return leg['total_inr']
     except Exception:

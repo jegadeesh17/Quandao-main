@@ -30,13 +30,13 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 
-from quandao_public.strategies.cpcv_validation import (
+from quandao_public.engine.validation.cpcv_validation import (
     generate_cpcv_splits,
     run_cpcv_backtest,
     compute_dsr,
     _annualized_sharpe,
 )
-from quandao_public.strategies.metrics import (
+from quandao_public.engine.validation.metrics import (
     sharpe_ratio,
     sortino_ratio,
     max_drawdown,

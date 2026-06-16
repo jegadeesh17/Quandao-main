@@ -28,7 +28,7 @@ INTERVIEW GOLD: Be ready to explain:
        Falls back to bisection when Vega is near zero (deep ITM/OTM options).
 
 USAGE:
-    from quandao_public.strategies.options_pricing import (
+    from quandao_public.engine.derivatives.options_pricing import (
         black_scholes, implied_volatility, select_strike_by_delta
     )
 

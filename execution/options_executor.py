@@ -49,13 +49,13 @@ from quandao_public.config import (
     NIFTY_LOT_SIZE,
     THETA_BURN_THRESHOLD,
 )
-from quandao_public.strategies.options_pricing import (
+from quandao_public.engine.derivatives.options_pricing import (
     black_scholes,
     implied_volatility,
     select_strike_by_delta,
     theta_burn_exit,
 )
-from quandao_public.strategies.position_sizing import delta_adjusted_size
+from quandao_public.engine.risk.position_sizing import delta_adjusted_size
 from quandao_public.risk.risk_manager import (
     portfolio_risk_summary,
     single_trade_risk_check,

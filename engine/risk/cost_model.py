@@ -22,7 +22,7 @@ NSE COST COMPONENTS (FY2025-26):
     6. GST               — 18% on (brokerage + exchange charge + SEBI fee)
 
 USAGE:
-    from quandao_public.strategies.cost_model import compute_round_trip_cost
+    from quandao_public.engine.risk.cost_model import compute_round_trip_cost
 
     cost = compute_round_trip_cost(entry_price=24500, exit_price=24550,
                                    quantity=75, instrument='futures')
